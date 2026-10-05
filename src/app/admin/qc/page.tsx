@@ -35,6 +35,7 @@ import VerifiedUserIcon from '@mui/icons-material/VerifiedUserOutlined';
 import Link from 'next/link';
 import { useStickyState } from '@/hooks/useStickyState';
 import { LEDGER_COLUMNS, type LedgerRow as SharedLedgerRow } from '@/components/ledgerColumns';
+import { stickyFirstColumn, scrollableTable } from '@/lib/stickyColumn';
 
 /** One renewal week in the Cohort Ledger — mirrors CohortLedgerRow on the server. */
 /**
@@ -1963,8 +1964,10 @@ const MAX_RENDERED = 300;
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
       {report === 'cohort_ledger' && rowsReport === 'cohort_ledger' && (
-        <Paper variant="outlined" sx={{ mb: 2, overflowX: 'auto' }}>
-          <Table size="small" stickyHeader>
+        <Paper variant="outlined" sx={{ mb: 2, ...scrollableTable }}>
+          {/* Report rows run to twenty-odd columns. The lead stays pinned so a row keeps
+              its identity while the columns scroll past it. */}
+          <Table size="small" stickyHeader sx={stickyFirstColumn}>
             <TableHead>
               <TableRow>
                 {/*

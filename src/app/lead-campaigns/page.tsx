@@ -13,6 +13,7 @@ import { useRouter } from 'next/navigation';
 import CampaignCreateDialog from '@/components/CampaignCreateDialog';
 import MailboxRowActions from '@/components/MailboxRowActions';
 import MailboxDetailDrawer from '@/components/MailboxDetailDrawer';
+import { stickyFirstColumn, scrollableTable } from '@/lib/stickyColumn';
 
 /**
  * Lead Campaigns — its own module.
@@ -125,8 +126,9 @@ export default function LeadCampaignsPage() {
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
       {tab === 'campaigns' && (
-        <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
-          <Table size="small" stickyHeader>
+        <Paper variant="outlined" sx={scrollableTable}>
+          {/* Eleven columns. The campaign name stays put while the counters scroll. */}
+          <Table size="small" stickyHeader sx={stickyFirstColumn}>
             <TableHead>
               <TableRow>
                 {['Campaign', 'Status', 'Created', 'Progress', 'Leads', 'Sent', 'Opens', 'Replies', 'Clicks', 'Bounced', 'Unsub'].map((h) => (

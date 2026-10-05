@@ -9,6 +9,7 @@ import SwapVertIcon from '@mui/icons-material/SwapVert';
 import DownloadIcon from '@mui/icons-material/Download';
 import { useStickyState } from '@/hooks/useStickyState';
 import { LEDGER_COLUMNS, type LedgerRow } from '@/components/ledgerColumns';
+import { stickyFirstColumn, scrollableTable } from '@/lib/stickyColumn';
 
 /**
  * The cohort ledgers, on their own screen.
@@ -223,8 +224,10 @@ export default function CohortsPage() {
       )}
 
       {!loading && rows.length > 0 && shownGrade === 'B' && (
-        <Paper variant="outlined">
-          <Table size="small">
+        /* The Grade A ledger beside this one already scrolled; this one did not, which only
+           went unnoticed because Grade A is the tab that opens by default. */
+        <Paper variant="outlined" sx={scrollableTable}>
+          <Table size="small" sx={stickyFirstColumn}>
             <TableHead>
               <TableRow>
                 {['Cohort', 'Renewal week', 'Grade B', 'In the roof band', 'Queued', 'Traced',
@@ -285,7 +288,10 @@ export default function CohortsPage() {
             contact, Unworked A, Lost, Workable lost % and six more, along with the tooltips
             that explain the numbers people have argued about.
           */}
-          <Table size="small">
+          {/* Twenty-odd columns, so this is the table that most needs its anchor: scrolled
+              three columns right, a row of figures with no renewal week beside it belongs to
+              nobody. */}
+          <Table size="small" sx={stickyFirstColumn}>
             <TableHead>
               <TableRow>
                 {LEDGER_COLUMNS.map((c) => (

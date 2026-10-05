@@ -25,6 +25,7 @@ import type { OutreachChannels } from '@/services/outreachChannels.service';
 import type { BandAccuracyCut, LossRow } from '@/services/quoteOutcomes.service';
 import ChannelSections from './ChannelSections';
 import ColumnHeader from './ColumnHeader';
+import { stickyFirstColumn, scrollableTable } from '@/lib/stickyColumn';
 
 /**
  * What the endpoint returns: the Grade A ladder, plus the per-channel half of Sec 10.7.
@@ -533,7 +534,11 @@ export default function OutreachDashboardPage() {
               </Typography>
             </Box>
             <Divider />
-            <Table size="small">
+            {/* Eight columns of counts, rates, targets and floors. Wider than a phone, so it
+                scrolls within the card and the stage name stays pinned — a rate with no stage
+                beside it is exactly the confusion the caption above warns about. */}
+            <Box sx={scrollableTable}>
+            <Table size="small" sx={stickyFirstColumn}>
               <TableHead>
                 <TableRow>
                   <ColumnHeader
@@ -641,6 +646,7 @@ export default function OutreachDashboardPage() {
                 })}
               </TableBody>
             </Table>
+            </Box>
           </Paper>
 
           {/* ── Guardrails ─────────────────────────────────────────────────── */}
@@ -655,7 +661,10 @@ export default function OutreachDashboardPage() {
               </Typography>
             </Box>
             <Divider />
-            <Table size="small">
+            {/* Same treatment as the funnel: the guardrail's name stays pinned while the
+                reading, target, floor and pause rule scroll past it. */}
+            <Box sx={scrollableTable}>
+            <Table size="small" sx={stickyFirstColumn}>
               <TableHead>
                 <TableRow>
                   <ColumnHeader
@@ -758,6 +767,7 @@ export default function OutreachDashboardPage() {
                 })}
               </TableBody>
             </Table>
+            </Box>
           </Paper>
 
           {/* ── Per renewal week ───────────────────────────────────────────── */}

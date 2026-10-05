@@ -13,6 +13,7 @@ import CallReminderList from '@/components/CallReminderList';
 import Tabs from '@mui/material/Tabs';
 import Tab from '@mui/material/Tab';
 import { useStickyState } from '@/hooks/useStickyState';
+import { stickyFirstColumn, scrollableTable } from '@/lib/stickyColumn';
 /**
  * Type-only. The service reads @/lib/neon, and a value import would pull the database
  * client into this bundle — the failure the outreach page documents.
@@ -288,7 +289,11 @@ export default function PhoneDashboardPage() {
           {/* ── Per week ── */}
           <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
             <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>By renewal week</Typography>
-            <Table size="small">
+            {/* Seven columns do not fit a phone. The table scrolls inside this box rather
+                than pushing the whole page sideways, and the week stays pinned so a row
+                keeps its name while the figures move. */}
+            <Box sx={{ ...scrollableTable, mx: -2, px: 2 }}>
+            <Table size="small" sx={stickyFirstColumn}>
               <TableHead>
                 <TableRow>
                   {['Week', 'Rated', 'Verified email', 'To call', 'Called', 'Reached', 'No numbers'].map((h) => (
@@ -313,6 +318,7 @@ export default function PhoneDashboardPage() {
                 ))}
               </TableBody>
             </Table>
+            </Box>
           </Paper>
 
           {/* ── The queue ── */}
@@ -323,7 +329,11 @@ export default function PhoneDashboardPage() {
                 — never called first, then most live numbers, then soonest renewal
               </Box>
             </Typography>
-            <Table size="small">
+            {/* The call list is the widest table on the screen. Same treatment: it scrolls
+                on its own, and the renewal week stays pinned so Ruben can read across a row
+                without losing which one he is on. */}
+            <Box sx={{ ...scrollableTable, mx: -2, px: 2 }}>
+            <Table size="small" sx={stickyFirstColumn}>
               <TableHead>
                 <TableRow>
                   {[
@@ -389,6 +399,7 @@ export default function PhoneDashboardPage() {
                 )}
               </TableBody>
             </Table>
+            </Box>
             {data.queue.length > 300 && (
               <Typography variant="caption" sx={{ color: '#5a6675', mt: 1, display: 'block' }}>
                 Showing the first 300 of {data.queue.length}. Export for the rest.

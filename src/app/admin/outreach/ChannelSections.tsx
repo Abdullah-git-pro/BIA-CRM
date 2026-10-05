@@ -14,6 +14,7 @@ import type {
 } from '@/services/outreachChannels.service';
 import type { BandAccuracyCut, LossRow } from '@/services/quoteOutcomes.service';
 import ColumnHeader from './ColumnHeader';
+import { stickyFirstColumn, scrollableTable } from '@/lib/stickyColumn';
 
 /**
  * The per-channel half of the Sec 10.7 dashboard.
@@ -64,7 +65,13 @@ function FunnelCard({ f }: { f: ChannelFunnel }) {
         <Typography variant="caption" color="text.secondary">{f.status}</Typography>
       </Box>
       <Divider />
-      <Table size="small">
+      {/* Stage, count, share, rate and the stage it is measured against come to about
+          420px — just wider than a phone, which is the most awkward kind of too wide: it
+          pushed the whole page sideways for the sake of one column. It scrolls here
+          instead, with the stage name pinned, because a rate whose denominator has
+          scrolled out of view is the exact confusion this funnel is drawn to prevent. */}
+      <Box sx={scrollableTable}>
+      <Table size="small" sx={stickyFirstColumn}>
         <TableHead>
           <TableRow>
             <ColumnHeader
@@ -129,6 +136,7 @@ function FunnelCard({ f }: { f: ChannelFunnel }) {
           ))}
         </TableBody>
       </Table>
+      </Box>
       {f.extras.length > 0 && (
         <Box sx={{ px: 2, py: 1.25, borderTop: '1px solid #e6e8eb' }}>
           <Stack direction="row" spacing={3} sx={{ flexWrap: 'wrap' }} useFlexGap>

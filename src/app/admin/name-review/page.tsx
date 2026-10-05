@@ -194,7 +194,11 @@ export default function NameReviewPage() {
               {summary ? ` — ${summary.approved} kept, ${summary.rejected} blocked` : ''}
             </Typography>
           </Box>
-          <Stack direction="row" spacing={1}>
+          {/* Three fixed-width pickers and a button come to roughly 480px, which is wider
+              than a phone. They wrap onto as many lines as they need rather than pushing
+              the page sideways — each one keeps its own minimum width so the labels stay
+              readable. */}
+          <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap' }}>
             <TextField
               select size="small" label="Renewal week" value={cohort}
               onChange={(e) => setCohort(e.target.value)}
@@ -364,13 +368,21 @@ export default function NameReviewPage() {
                   )}
                 </Box>
 
+                {/* Side by side where there is room; stacked and full width on a phone.
+                    These are the two decisions the screen exists for, so on a small screen
+                    they get the whole width rather than being squeezed to fit — Ruben works
+                    this between calls and a mis-tap here approves a stranger's address. */}
                 {!r.decision && (
-                  <Stack direction="row" spacing={1.5} sx={{ flexShrink: 0 }}>
+                  <Stack
+                    direction={{ xs: 'column', sm: 'row' }}
+                    spacing={1.5}
+                    sx={{ flexShrink: 0, width: { xs: '100%', sm: 'auto' } }}
+                  >
                     <Button
                       variant="outlined" color="error" size="large" disabled={busy}
                       startIcon={<BlockIcon />}
                       onClick={() => void decide(r, 'rejected')}
-                      sx={{ minWidth: 150 }}
+                      sx={{ minWidth: { sm: 150 }, width: { xs: '100%', sm: 'auto' } }}
                     >
                       Not them
                     </Button>
@@ -378,7 +390,7 @@ export default function NameReviewPage() {
                       variant="contained" color="success" size="large" disabled={busy}
                       startIcon={<CheckCircleIcon />}
                       onClick={() => void decide(r, 'approved')}
-                      sx={{ minWidth: 150 }}
+                      sx={{ minWidth: { sm: 150 }, width: { xs: '100%', sm: 'auto' } }}
                     >
                       Yes, it&apos;s them
                     </Button>
