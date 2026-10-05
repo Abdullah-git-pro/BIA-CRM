@@ -30,6 +30,7 @@ import GavelIcon from '@mui/icons-material/Gavel';
 import PersonSearchIcon from '@mui/icons-material/PersonSearch';
 import VerifiedIcon from '@mui/icons-material/Verified';
 import SkipTraceDialog from '@/components/SkipTraceDialog';
+import UnclaimedAddressPanel from '@/components/UnclaimedAddressPanel';
 import CallDispositionPanel from '@/components/CallDispositionPanel';
 import QuoteOutcomePanel from '@/components/QuoteOutcomePanel';
 import { useAuth } from '@/context/AuthContext';
@@ -1541,6 +1542,18 @@ export default function LeadDetailPage() {
               <FeatureSelect label="Married / Single" value={extra.maritalStatus ?? ''} onChange={(v) => setEx('maritalStatus', v)}
                 options={[['married', 'Married (M)'], ['single', 'Single (S)']]} />
             </Box>
+            {/*
+              * Addresses the trace found and attributed to nobody.
+              *
+              * Directly under the email fields, because that is the gap it fills: this card
+              * can read "no address belongs to the insured" while the insured's own address
+              * sits in the trace results a few lines away, unattributed and therefore unused.
+              *
+              * It renders nothing at all on a lead with no unclaimed addresses, which is most
+              * of them. Approving writes the address into the insured's slot and reloads the
+              * card, so the email fields above show it immediately.
+              */}
+            <UnclaimedAddressPanel leadId={String(lead.id)} onChanged={() => void load()} />
             {/* A card can carry several of the insured's addresses, and outreach goes to all
                 of them until one answers. From that moment the household has a single
                 contact — shown here because a producer picking up the card needs to know

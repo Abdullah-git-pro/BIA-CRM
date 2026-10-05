@@ -63,6 +63,16 @@ const VERDICT_LABEL: Record<string, { text: string; colour: 'error' | 'warning' 
   mismatch: { text: 'No part of the name is in this address', colour: 'error' },
   review: { text: 'Partly matches — worth a look', colour: 'warning' },
   no_name: { text: 'No owner name on the record to check against', colour: 'warning' },
+  /**
+   * The other direction entirely.
+   *
+   * Every other row here is an address the system WAS going to use and is holding back.
+   * This one is an address nobody claimed: the trace returned it for the property without
+   * attributing it to a person, so no send path offers it, and the card reads as having no
+   * insured address while this sits on it. Approving puts it on the lead — see
+   * poolAttribution.service — so "yes" here genuinely makes the lead mailable.
+   */
+  pool_candidate: { text: 'Unclaimed — looks like the insured’s own address', colour: 'warning' },
 };
 
 export default function NameReviewPage() {
@@ -179,8 +189,18 @@ export default function NameReviewPage() {
             <Typography variant="h3" sx={{ fontWeight: 700, lineHeight: 1 }}>
               {loading ? '—' : (view === 'open' ? rows.length : rows.filter((r) => !r.decision).length)}
             </Typography>
+            {/*
+              * The label names every filter the number is under.
+              *
+              * It read "left to check this week" while the week picker beside it offered
+              * "2026-10-12 (43)" and this said 39 — both true, the difference being a grade
+              * filter two boxes away that the label never mentioned. A number that does not
+              * say what it is counting is a number somebody reconciles by guessing.
+              */}
             <Typography variant="body2" color="text.secondary">
-              left to check{cohort ? ' this week' : ''}
+              left to check
+              {grade ? ` in Grade ${grade}` : ''}
+              {cohort ? ' this week' : ''}
             </Typography>
           </Box>
           <Box sx={{ flex: 1, width: '100%' }}>
@@ -275,7 +295,129 @@ export default function NameReviewPage() {
 
       {/* ── The queue ─────────────────────────────────────────────────────── */}
       <Stack spacing={2}>
-        {rows.map((r) => {
+        {/*
+          * Unclaimed addresses are grouped by LEAD, one card per household.
+          *
+          * The rest of this queue is one row per address because each is an independent
+          * question: this address was going to be used, hold it or release it. These are a
+          * different question — "which of these is the policyholder's?" — and the first
+          * version rendered them the same way, so Waqas Ashraf filled three cards that
+          * repeated his name, his address and his renewal week, and asked what looked like
+          * the same question three times.
+          *
+          * Several CAN be right at once: Frank, 28 Sep — "individual emails sent to each of
+          * the insured's verified emails — we are not sure which will be primary so we must
+          * outreach all." So each address keeps its own decision; what changes is that the
+          * household is asked about once, with its candidates side by side, which is also
+          * the only way to see that one is a personal address and two are work ones.
+          */}
+        {(() => {
+          const groups = new Map<string, typeof rows>();
+          for (const r of rows) {
+            if (r.verdict !== 'pool_candidate') continue;
+            const a = groups.get(r.leadId) ?? [];
+            a.push(r);
+            groups.set(r.leadId, a);
+          }
+          return [...groups.values()].map((group) => {
+            const head = group[0];
+            const open = group.filter((g) => !g.decision);
+            return (
+              <Paper key={`pool-${head.leadId}`} variant="outlined" sx={{ p: 2.5 }}>
+                <Typography sx={{ fontWeight: 600 }}>
+                  Policy is in the name of <strong>{head.owner || 'no name on the record'}</strong>
+                  {head.coInsuredOwner && <> and <strong>{head.coInsuredOwner}</strong></>}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {head.address || 'no property address'}
+                  {head.cohort ? ` · renews week of ${head.cohort}` : ''}
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                  Skip tracing returned {group.length === 1 ? 'this address' : `these ${group.length} addresses`}
+                  {' '}for the property and attributed {group.length === 1 ? 'it' : 'them'} to nobody.
+                  {' '}
+                  {/* The {' '} is load-bearing: JSX drops the newline between an expression
+                      and the text after it, which rendered "They readlike the insured". */}
+                  {group.length === 1 ? 'It reads' : 'They read'}
+                  {' '}like the insured&apos;s own name, so this lead has no address the
+                  {' '}campaign will use until one is approved.
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                  Approving puts the address on the lead. More than one may be theirs — approve each that is.
+                </Typography>
+                <Box sx={{ mt: 1.5 }}>
+                  {group.map((g) => {
+                    const busy = busyIds.has(g.id);
+                    return (
+                      <Stack
+                        key={g.id}
+                        direction={{ xs: 'column', sm: 'row' }}
+                        spacing={1.5}
+                        sx={{
+                          alignItems: { sm: 'center' }, justifyContent: 'space-between',
+                          py: 1.25, borderTop: '1px solid', borderColor: 'divider',
+                          opacity: busy ? 0.55 : 1,
+                        }}
+                      >
+                        <Typography
+                          component="a"
+                          href={`/leads/${g.leadId}`}
+                          target="_blank"
+                          rel="noopener"
+                          sx={{
+                            fontFamily: 'monospace', fontSize: '1.05rem', fontWeight: 600,
+                            wordBreak: 'break-all', minWidth: 0,
+                          }}
+                        >
+                          {g.email}
+                        </Typography>
+                        {g.decision ? (
+                          <Chip
+                            size="small"
+                            color={g.decision === 'approved' ? 'success' : 'default'}
+                            label={`${g.decision === 'approved' ? 'Kept' : 'Blocked'}`
+                              + `${g.decidedBy ? ` by ${g.decidedBy}` : ''}`}
+                            sx={{ flexShrink: 0 }}
+                          />
+                        ) : (
+                          <Stack
+                            direction={{ xs: 'column', sm: 'row' }}
+                            spacing={1.5}
+                            sx={{ flexShrink: 0, width: { xs: '100%', sm: 'auto' } }}
+                          >
+                            <Button
+                              variant="outlined" color="error" size="small" disabled={busy}
+                              startIcon={<BlockIcon />}
+                              onClick={() => void decide(g, 'rejected')}
+                              sx={{ minWidth: { sm: 130 }, width: { xs: '100%', sm: 'auto' } }}
+                            >
+                              Not them
+                            </Button>
+                            <Button
+                              variant="contained" color="success" size="small" disabled={busy}
+                              startIcon={<CheckCircleIcon />}
+                              onClick={() => void decide(g, 'approved')}
+                              sx={{ minWidth: { sm: 130 }, width: { xs: '100%', sm: 'auto' } }}
+                            >
+                              Yes, it&apos;s them
+                            </Button>
+                          </Stack>
+                        )}
+                      </Stack>
+                    );
+                  })}
+                </Box>
+                {open.length === 0 && (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                    All decided.
+                  </Typography>
+                )}
+              </Paper>
+            );
+          });
+        })()}
+
+        {rows.filter((r) => r.verdict !== 'pool_candidate').map((r) => {
           const busy = busyIds.has(r.id);
           const label = VERDICT_LABEL[r.verdict] ?? { text: r.verdict, colour: 'warning' as const };
           return (
@@ -330,8 +472,32 @@ export default function NameReviewPage() {
                     {r.coInsuredOwner && <> and <strong>{r.coInsuredOwner}</strong></>}
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
-                    Skip tracing attributed this address to the{' '}
-                    {r.personRole === 'coInsured' ? 'co-insured' : 'insured'}.
+                    {/*
+                      * Where the address came from — and the two rows here mean opposite
+                      * things.
+                      *
+                      * An ordinary row is an address the TRACE attributed to this person
+                      * and the surname check then held back. A pool candidate is the
+                      * reverse: the trace attributed it to nobody, and it is here because
+                      * the local part reads like the insured's own name.
+                      *
+                      * This line said "skip tracing attributed this address to the insured"
+                      * on both. On a pool candidate that is the opposite of what happened,
+                      * and it is the one sentence on the row that speaks to how much the
+                      * address can be trusted — so it would have talked a reviewer into
+                      * approving on evidence that does not exist.
+                      */}
+                    {r.verdict === 'pool_candidate' ? (
+                      <>
+                        Skip tracing returned this address for the property and attributed it
+                        to nobody. It is here because it reads like the insured&apos;s own name.
+                      </>
+                    ) : (
+                      <>
+                        Skip tracing attributed this address to the{' '}
+                        {r.personRole === 'coInsured' ? 'co-insured' : 'insured'}.
+                      </>
+                    )}
                     {/*
                       Grade B says how the decision lands, so it belongs on the row.
 

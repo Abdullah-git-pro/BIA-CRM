@@ -21,7 +21,7 @@ import { subjectTemplates } from './campaignSubject.service';
  * let Frank/Ruben pull that data back out to spot trends without cross-referencing
  * the Travelers portal by hand.
  */
-export type QcReportType = 'referral' | 'grade_overrides' | 'keyword' | 'roof_b' | 'type_mismatch' | 'owner_verify' | 'contact_coverage' | 'skiptrace_mismatch' | 'blast_skiptrace' | 'cohort' | 'reachability' | 'call_outcome' | 'emails_insured' | 'emails_all' | 'recapture_log' | 'already_ours' | 'co_insured_verify';
+export type QcReportType = 'referral' | 'grade_overrides' | 'keyword' | 'roof_b' | 'type_mismatch' | 'owner_verify' | 'contact_coverage' | 'skiptrace_mismatch' | 'blast_skiptrace' | 'cohort' | 'reachability' | 'call_outcome' | 'emails_insured' | 'emails_all' | 'recapture_log' | 'already_ours' | 'co_insured_verify' | 'coinsured_contact_mix';
 
 export interface QcRow {
   propertyId: string;
@@ -1230,6 +1230,71 @@ export async function getQcReport(type: QcReportType, params: QcReportParams = {
           LABEL[r.coInsuredVerifyStatus] ?? r.coInsuredVerifyStatus),
         coInsuredName: [r.owner2FirstName, r.owner2LastName].filter(Boolean).join(' ') || null,
         rollCoInsured: r.coInsuredVerifyName ?? null,
+      }));
+  }
+
+  if (type === 'coinsured_contact_mix') {
+    /**
+     * Cards where the co-insured's address looks like the INSURED rather than the
+     * co-insured (register: the field-guard fault).
+     *
+     * ── Why these exist ──────────────────────────────────────────────────────
+     * Until the guard was fixed, each co-insured field was filled independently: the name
+     * was kept because it was already there, and the email was taken from whichever person
+     * the trace handed over. Lead 251520882 ended up reading "Zebunnisa Saeed ·
+     * waqas24@yahoo.com" — the insured's own address, under his wife's name. An email
+     * opening "Dear Zebunnisa" would have reached Waqas, and the lead counted as reachable
+     * at the co-insured in every report.
+     *
+     * The code no longer does this. These are the cards it already did it to.
+     *
+     * ── Why this reports rather than repairs ─────────────────────────────────
+     * Moving the address to the insured would be right on most of these and wrong on some:
+     * a shared household address, or a co-insured who genuinely uses a name-like handle.
+     * Automatic adjudication of a name question has been tried twice on this project and
+     * was wrong both times — see coInsuredVerify. So the two names and the address are put
+     * side by side and a person decides, which takes a second with them in front of you.
+     *
+     * Several of these hand back an insured email we did not know we held: Rebecca Handel
+     * is on this list and is also one of the Grade A cards reported as unemailable.
+     */
+    const token = (v: unknown) => String(v ?? '').toLowerCase().replace(/[^a-z]/g, '');
+    /** How many of a person's name tokens appear in the address's local part. */
+    const looksLike = (localPart: string, first: unknown, last: unknown) => {
+      const f = token(first); const l = token(last);
+      let n = 0;
+      if (f.length >= 3 && localPart.includes(f)) n++;
+      if (l.length >= 3 && localPart.includes(l)) n++;
+      return n;
+    };
+
+    rows = await sql`
+      SELECT * FROM "Lead"
+       WHERE "owner2Email" IS NOT NULL AND "owner2Email" <> ''
+         AND COALESCE("manualGrade", "grade") IN ('A', 'B')
+       ORDER BY "cohort", "owner1LastName"` as any[];
+
+    return rows
+      .filter((r: any) => inRange(iso(r.effectiveDate), effFrom, effTo))
+      .filter((r: any) => {
+        const localPart = String(r.owner2Email).split('@')[0].toLowerCase().replace(/[^a-z]/g, '');
+        const asInsured = looksLike(localPart, r.owner1FirstName, r.owner1LastName);
+        const asCoInsured = looksLike(localPart, r.owner2FirstName, r.owner2LastName);
+        // Only where it looks MORE like the insured. An address matching both — a shared
+        // surname — says nothing, and listing those would bury the real ones.
+        return asInsured > asCoInsured && asInsured > 0;
+      })
+      .map((r: any) => ({
+        ...rowOf(
+          r,
+          `Filed under ${[r.owner2FirstName, r.owner2LastName].filter(Boolean).join(' ') || 'the co-insured'}, `
+          + `but "${r.owner2Email}" reads as ${[r.owner1FirstName, r.owner1LastName].filter(Boolean).join(' ')}. `
+          + `Move it to the insured, or confirm it is theirs.`,
+          null,
+          null,
+          'Co-insured slot holds the insured’s address',
+        ),
+        coInsuredName: [r.owner2FirstName, r.owner2LastName].filter(Boolean).join(' ') || null,
       }));
   }
 

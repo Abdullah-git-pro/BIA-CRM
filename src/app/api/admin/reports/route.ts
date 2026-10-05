@@ -15,6 +15,7 @@ import { getQcReport, QcReportType } from '@/services/reports.service';
 const VALID_REPORTS: Record<QcReportType, true> = {
   recapture_log: true,
   co_insured_verify: true,
+  coinsured_contact_mix: true,
   already_ours: true,
   referral: true,
   grade_overrides: true,

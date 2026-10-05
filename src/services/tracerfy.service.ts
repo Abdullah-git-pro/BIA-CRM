@@ -1,5 +1,5 @@
 import type { Lead } from '@/types/lead';
-import { matchInsuredPerson, insuredPatchFromPersons } from './skipTrace.service';
+import { matchInsuredPerson, insuredPatchFromPersons, coInsuredPatch } from './skipTrace.service';
 import { logTrace } from './skipTraceLog.service';
 import { readVendorJson } from './vendorErrors';
 
@@ -137,12 +137,26 @@ export async function runTracerfy(
     // Prefer the top-ranked relative that actually has a contact to hand over.
     const top = rels.find((r: any) => relPhone(r) || relEmail(r)) ?? rels[0];
     if (top) {
-      if (!l.owner2FirstName && !insuredPatch.owner2FirstName && top.first_name) insuredPatch.owner2FirstName = top.first_name;
-      if (!l.owner2LastName && !insuredPatch.owner2LastName && top.last_name) insuredPatch.owner2LastName = top.last_name;
-      if (!l.owner2Phone && !insuredPatch.owner2Phone && relPhone(top)) insuredPatch.owner2Phone = String(relPhone(top));
-      if (!l.owner2Email && !insuredPatch.owner2Email && relEmail(top)) insuredPatch.owner2Email = String(relEmail(top));
+      /**
+       * One person, or nothing — see coInsuredPatch.
+       *
+       * This block used to guard each field separately, which is how lead 251520882 came
+       * to read "Zebunnisa Saeed · waqas24@yahoo.com": the card already named a
+       * co-insured so the name was kept, and the email was taken from a "relative"
+       * Tracerfy called Ashraf Waqas — the insured himself with his name the other way
+       * up. The address was real and it belonged to the wrong person on the card.
+       *
+       * The lead already in hand is passed with the pending patch merged over it, so a
+       * co-insured this trace has just proposed is respected the same way a stored one is.
+       */
       const rd = String(top.dob ?? '').match(/^(\d{4})-(\d{2})/);
-      if (!l.owner2Dob && !insuredPatch.owner2Dob && rd) insuredPatch.owner2Dob = `${rd[1]}-${rd[2]}-01`;
+      Object.assign(insuredPatch, coInsuredPatch({ ...l, ...insuredPatch }, {
+        firstName: top.first_name,
+        lastName: top.last_name,
+        phone: relPhone(top),
+        email: relEmail(top),
+        dob: rd ? `${rd[1]}-${rd[2]}-01` : undefined,
+      }));
     }
   }
 

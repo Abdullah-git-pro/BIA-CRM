@@ -33,6 +33,8 @@ export async function GET(request: NextRequest) {
     const view = request.nextUrl.searchParams.get('view') ?? 'open';
     const cohort = request.nextUrl.searchParams.get('cohort');
     const grade = request.nextUrl.searchParams.get('grade');
+    /** The lead card asks about one household; it has no use for the whole queue. */
+    const leadId = request.nextUrl.searchParams.get('leadId');
     const [rows, summary] = await Promise.all([
       getReviewList({
         openOnly: view === 'open',
@@ -40,9 +42,12 @@ export async function GET(request: NextRequest) {
         cohortFrom: cohort || undefined,
         cohortTo: cohort || undefined,
         grade: grade || undefined,
-        limit: 2000,
+        leadId: leadId || undefined,
+        limit: leadId ? 50 : 2000,
       }),
-      reviewSummary(),
+      // Scoped the same way the list is, so the week picker cannot disagree with the
+      // headline beside it.
+      reviewSummary({ grade: grade || undefined }),
     ]);
     return NextResponse.json({ success: true, rows, summary, view });
   } catch (err) {

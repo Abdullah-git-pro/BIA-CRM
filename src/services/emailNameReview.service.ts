@@ -325,6 +325,8 @@ export async function getReviewList(params: {
   decidedOnly?: boolean;
   /** Narrow to one book, read live from the lead rather than from the row. */
   grade?: string;
+  /** One lead only — what the lead card asks for. */
+  leadId?: string;
   limit?: number;
 } = {}): Promise<ReviewRow[]> {
   const rows = await sql`
@@ -334,7 +336,8 @@ export async function getReviewList(params: {
            COALESCE(l."manualGrade", l."grade") AS "leadGrade"
       FROM "EmailNameReview" r
       LEFT JOIN "Lead" l ON l."id" = r."leadId"
-     WHERE (${params.cohortFrom ?? null}::text IS NULL OR r."cohort" >= ${params.cohortFrom ?? null})
+     WHERE (${params.leadId ?? null}::text IS NULL OR r."leadId" = ${params.leadId ?? null})
+       AND (${params.cohortFrom ?? null}::text IS NULL OR r."cohort" >= ${params.cohortFrom ?? null})
        AND (${params.cohortTo ?? null}::text   IS NULL OR r."cohort" <= ${params.cohortTo ?? null})
        AND (${params.openOnly ?? false}::boolean = FALSE OR r."decision" IS NULL)
        AND (${params.decidedOnly ?? false}::boolean = FALSE OR r."decision" IS NOT NULL)
@@ -365,7 +368,23 @@ export async function getReviewList(params: {
   }));
 }
 
-/** Record a person's decision on held addresses. */
+/**
+ * Record a person's decision on held addresses.
+ *
+ * ── Approving a POOL candidate also puts it on the lead ─────────────────────
+ * For an address the vendor attributed, this queue is purely a blocklist: insuredEmails()
+ * already returns it, and approving simply stops heldAddresses() withholding it.
+ *
+ * A pool candidate is the other way round. Nothing attributed it, so no send path offers
+ * it, and lifting a block on an address nobody proposes changes nothing at all — the
+ * screen would say approved and the lead would stay unmailable. So an approved pool
+ * candidate is written into the first empty insured slot, which is where insuredEmails()
+ * looks first.
+ *
+ * Promotion never fails a decision. The judgement is the thing worth keeping; a lead that
+ * was approved and not promoted is visible and repairable, where an approval rolled back
+ * because a write failed is a judgement somebody has to make twice.
+ */
 export async function decideReview(ids: string[], input: {
   decision: ReviewDecision; decidedBy: string; note?: string | null;
 }): Promise<number> {
@@ -376,21 +395,52 @@ export async function decideReview(ids: string[], input: {
            "decidedAt" = NOW(), "note" = ${input.note ?? null}, "updatedAt" = NOW()
      WHERE "id" = ANY(${ids}::text[]) AND "decision" IS NULL
     RETURNING "id"` as Array<{ id: string }>;
+
+  if (input.decision === 'approved' && rows.length) {
+    try {
+      const { promoteApproved } = await import('./poolAttribution.service');
+      await promoteApproved(rows.map((r) => r.id));
+    } catch (err) {
+      // Surfaced to the server log, never to the person deciding — see the note above.
+      console.error('pool candidate approved but not promoted:', (err as Error)?.message);
+    }
+  }
   return rows.length;
 }
 
 /** Counts for the preflight and the tab. */
-export async function reviewSummary(): Promise<{
+/**
+ * Counts for the preflight and the tab.
+ *
+ * ── The per-week count follows the grade filter ─────────────────────────────
+ * It did not, and the screen disagreed with itself: the week picker offered
+ * "2026-10-12 (43)" while the headline beside it read 39 left to check. Both were right —
+ * 43 open rows in that week, 39 of them on Grade A leads — and the only thing explaining
+ * the gap was a filter two boxes away that the count ignored.
+ *
+ * Two numbers for one week on one screen is the fault this project keeps paying for, so
+ * the count is now scoped the same way the list is. The grade lives on the LEAD rather
+ * than on the review row, which is why this has to join rather than filter in place.
+ */
+export async function reviewSummary(params: { grade?: string } = {}): Promise<{
   open: number; approved: number; rejected: number; byCohort: Array<{ cohort: string; open: number }>;
 }> {
+  const grade = params.grade?.trim() || null;
   const [t] = await sql`
-    SELECT COUNT(*) FILTER (WHERE "decision" IS NULL)::int AS open,
-           COUNT(*) FILTER (WHERE "decision" = 'approved')::int AS approved,
-           COUNT(*) FILTER (WHERE "decision" = 'rejected')::int AS rejected
-      FROM "EmailNameReview"` as Array<Record<string, any>>;
+    SELECT COUNT(*) FILTER (WHERE r."decision" IS NULL)::int AS open,
+           COUNT(*) FILTER (WHERE r."decision" = 'approved')::int AS approved,
+           COUNT(*) FILTER (WHERE r."decision" = 'rejected')::int AS rejected
+      FROM "EmailNameReview" r
+      JOIN "Lead" l ON l."id" = r."leadId"
+     WHERE (${grade}::text IS NULL
+            OR COALESCE(l."manualGrade", l."grade") = ${grade})` as Array<Record<string, any>>;
   const byCohort = await sql`
-    SELECT "cohort", COUNT(*)::int AS open FROM "EmailNameReview"
-     WHERE "decision" IS NULL AND "cohort" IS NOT NULL
+    SELECT r."cohort", COUNT(*)::int AS open
+      FROM "EmailNameReview" r
+      JOIN "Lead" l ON l."id" = r."leadId"
+     WHERE r."decision" IS NULL AND r."cohort" IS NOT NULL
+       AND (${grade}::text IS NULL
+            OR COALESCE(l."manualGrade", l."grade") = ${grade})
      GROUP BY 1 ORDER BY 1` as Array<Record<string, any>>;
   return {
     open: Number(t?.open ?? 0),

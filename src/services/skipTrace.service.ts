@@ -122,6 +122,111 @@ function extractContacts(json: any, insured: any | null): { phones: string[]; em
   return { phones: [...new Set(phones)], emails: [...new Set(emails)] };
 }
 
+/** Letters only, lower-cased — so "O'Brien" and "OBrien" are one name. */
+const nameToken = (v: unknown) => String(v ?? '').toLowerCase().replace(/[^a-z]/g, '');
+
+/**
+ * Is this candidate the person already named in the co-insured slot?
+ *
+ * Compared as a SET of tokens, not first-then-last. Vendors routinely return a name the
+ * other way up — Tracerfy gave "Ashraf Waqas" for a homeowner the CRM holds as "Waqas
+ * Ashraf" — and an ordered comparison reads that as a stranger.
+ *
+ * Deliberately strict: an unsure answer must come back false. A false negative costs one
+ * contact detail we already hold elsewhere; a false positive writes one person's email
+ * under another person's name, which is the fault this whole guard exists to stop.
+ */
+function isSamePerson(
+  aFirst: unknown, aLast: unknown, bFirst: unknown, bLast: unknown,
+): boolean {
+  const a = [nameToken(aFirst), nameToken(aLast)].filter((t) => t.length >= 2);
+  const b = [nameToken(bFirst), nameToken(bLast)].filter((t) => t.length >= 2);
+  if (a.length < 2 || b.length < 2) return false;
+
+  const sameSet = a.every((t) => b.includes(t)) && b.every((t) => a.includes(t));
+  if (sameSet) return true;
+
+  // Surnames agree and one first name is a prefix of the other — "Alla" / "Allan".
+  const [aF, aL] = a; const [bF, bL] = b;
+  const surname = aL === bL || aL === bF || aF === bL;
+  if (!surname) return false;
+  const firstA = aL === bL ? aF : (aL === bF ? aF : aL);
+  const firstB = aL === bL ? bF : (aL === bF ? bL : bF);
+  const [short, long] = firstA.length <= firstB.length ? [firstA, firstB] : [firstB, firstA];
+  return short.length >= 3 && long.startsWith(short);
+}
+
+export type CoInsuredCandidate = {
+  firstName?: unknown; lastName?: unknown;
+  phone?: unknown; email?: unknown; dob?: unknown;
+};
+
+/**
+ * Fill the co-insured slot FROM ONE PERSON, or not at all.
+ *
+ * ── The fault this replaces ─────────────────────────────────────────────────
+ * Every co-insured field used to be guarded on its own: write the name if the name is
+ * empty, write the email if the email is empty, and so on. Each line is defensible and
+ * the combination is not — a card that already named a co-insured kept that name and
+ * took the EMAIL from whichever person the trace happened to pick.
+ *
+ * Lead 251520882 is what that produces. The card names Waqas Ashraf as insured and
+ * Zebunnisa Saeed as co-insured. Tracerfy returned a "relative" called Ashraf Waqas —
+ * the insured himself, name reversed — carrying waqas24@yahoo.com. The name guard held,
+ * the email guard did not, and the co-insured record became "Zebunnisa Saeed ·
+ * waqas24@yahoo.com". An email opening "Dear Zebunnisa" would arrive in Waqas's inbox,
+ * greeting him by his wife's name, and every report would call that lead reachable at
+ * the co-insured. 29 Grade A cards in C1 onward are in that state.
+ *
+ * ── The rule ────────────────────────────────────────────────────────────────
+ * The slot describes ONE human being, so it is filled as one unit:
+ *
+ *   · Slot already named  → contacts are taken only from that same person. The name is
+ *                           never rewritten.
+ *   · Slot empty          → name and contacts are taken together, from one person, and
+ *                           only when that person actually has a name. An unnamed
+ *                           contact dropped into a named slot is the original fault.
+ *   · Candidate is the insured → nothing. A second copy of the policyholder is not a
+ *                           second person, however the vendor labelled it.
+ *
+ * Producer entries are still never overwritten — that part was always right.
+ */
+export function coInsuredPatch(lead: any, candidate: CoInsuredCandidate | null | undefined): Record<string, any> {
+  if (!candidate) return {};
+
+  const cFirst = String(candidate.firstName ?? '').trim();
+  const cLast = String(candidate.lastName ?? '').trim();
+
+  // Never file the policyholder as their own co-insured.
+  if (isSamePerson(cFirst, cLast, lead?.owner1FirstName, lead?.owner1LastName)) return {};
+
+  const slotNamed = !!String(lead?.owner2FirstName ?? '').trim()
+    && !!String(lead?.owner2LastName ?? '').trim();
+
+  const patch: Record<string, any> = {};
+  const put = (key: string, value: unknown) => {
+    const v = typeof value === 'string' ? value.trim() : value;
+    if (v == null || v === '') return;
+    if (String(lead?.[key] ?? '').trim()) return;   // producer entry wins, always
+    patch[key] = v;
+  };
+
+  if (slotNamed) {
+    // Only this person's details may go into this person's slot.
+    if (!isSamePerson(cFirst, cLast, lead.owner2FirstName, lead.owner2LastName)) return {};
+  } else {
+    // Nothing is named yet, so the identity and the contacts arrive together or not at all.
+    if (!cFirst || !cLast) return {};
+    put('owner2FirstName', cFirst);
+    put('owner2LastName', cLast);
+  }
+
+  put('owner2Phone', candidate.phone);
+  put('owner2Email', candidate.email);
+  put('owner2Dob', candidate.dob);
+  return patch;
+}
+
 /**
  * Map skip-trace persons onto the lead's Insured Info, filling EMPTY slots only
  * (never clobber producer entries). REAPI DOB comes strictly from the name-matched
@@ -158,18 +263,23 @@ export function insuredPatchFromPersons(persons: any[], lead: any): Record<strin
     if (a > 0 && a < 120) patch.reapiAge = a;
   }
 
+  // Co-insured's OWN contact info (Frank Oct-2026) — so the spouse gets their own
+  // phone/email slots instead of being crowded out by the insured's numbers.
+  //
+  // Name, phone, email and date of birth go through coInsuredPatch TOGETHER, so this
+  // slot can never end up describing one person and holding another's address.
   if (coInsured) {
-    if (!lead.owner2FirstName && coInsured.firstName) patch.owner2FirstName = coInsured.firstName;
-    if (!lead.owner2LastName && coInsured.lastName) patch.owner2LastName = coInsured.lastName;
-    // Co-insured's OWN contact info (Frank Oct-2026) — so the spouse gets their own
-    // phone/email slots instead of being crowded out by the insured's numbers.
     const cc = personContacts(coInsured);
-    if (!lead.owner2Phone && cc.phones[0]) patch.owner2Phone = cc.phones[0];
-    if (!lead.owner2Email && cc.emails[0]) patch.owner2Email = cc.emails[0];
+    Object.assign(patch, coInsuredPatch(lead, {
+      firstName: coInsured.firstName,
+      lastName: coInsured.lastName,
+      phone: cc.phones[0],
+      email: cc.emails[0],
+      dob: dobOf(coInsured),
+    }));
   }
-  // Pre-fill the editable DOB fields (empty slots only); reapiDob above stays source-of-truth.
+  // The insured's own editable DOB (empty slots only); reapiDob above stays source-of-truth.
   if (!lead.owner1Dob) { const d = dobOf(primary); if (d) patch.owner1Dob = d; }
-  if (!lead.owner2Dob && coInsured) { const d = dobOf(coInsured); if (d) patch.owner2Dob = d; }
   return patch;
 }
 

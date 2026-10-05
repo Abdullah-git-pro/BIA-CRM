@@ -49,7 +49,7 @@ import { stickyFirstColumn, scrollableTable } from '@/lib/stickyColumn';
 type LedgerRow = SharedLedgerRow;
 
 
-type ReportType = 'co_insured_verify' | 'already_ours' | 'recapture_log' | 'cohort_ledger' | 'referral' | 'grade_overrides' | 'keyword' | 'roof_b' | 'type_mismatch' | 'owner_verify' | 'contact_coverage' | 'skiptrace_mismatch' | 'blast_skiptrace' | 'cohort' | 'reachability' | 'call_outcome' | 'emails_insured' | 'emails_all' | 'recapture_log';
+type ReportType = 'coinsured_contact_mix' | 'co_insured_verify' | 'already_ours' | 'recapture_log' | 'cohort_ledger' | 'referral' | 'grade_overrides' | 'keyword' | 'roof_b' | 'type_mismatch' | 'owner_verify' | 'contact_coverage' | 'skiptrace_mismatch' | 'blast_skiptrace' | 'cohort' | 'reachability' | 'call_outcome' | 'emails_insured' | 'emails_all' | 'recapture_log';
 
 
 const REPORTS: { key: ReportType; label: string; icon: React.ReactNode; blurb: string }[] = [
@@ -91,6 +91,12 @@ const REPORTS: { key: ReportType; label: string; icon: React.ReactNode; blurb: s
       + 'check the insured already gets. WIIP returns the whole deed line, so both people '
       + 'come from one record. Only rows needing a decision are listed: a different person, '
       + 'a second owner the card never named, or a near-miss worth a glance.',
+  },
+  {
+    key: 'coinsured_contact_mix',
+    label: 'Co-insured holds insured’s email',
+    icon: <ReportProblemIcon />,
+    blurb: 'Cards where the address filed under the co-insured reads as the INSURED’s own. Until the guard was fixed, each co-insured field was filled separately, so a card could keep one person’s name and take another’s email — an email opening "Dear Zebunnisa" would reach Waqas. The code no longer does this; these are the cards it already did it to. Several hand back an insured email we did not know we held. Reported, never moved automatically: the two names sit side by side and a person decides.',
   },
   { key: 'recapture_log', label: 'Recapture Log', icon: <HistoryIcon />, blurb: 'Every account that came back into play: when, which renewal week it belongs to, which process returned it, and whether its cohort had already been frozen. A held account is one that arrived after its send list was built, so it is NOT in this cycle — those are the rows that need a decision.' },
 ];
@@ -167,7 +173,7 @@ type PipelineRow = {
 const REPORT_GROUPS: { label: string; keys: ReportType[] }[] = [
   { label: 'Cohort performance', keys: ['cohort', 'reachability'] },
   { label: 'Grading', keys: ['grade_overrides', 'roof_b'] },
-  { label: 'Data quality', keys: ['type_mismatch', 'skiptrace_mismatch', 'owner_verify', 'co_insured_verify', 'contact_coverage'] },
+  { label: 'Data quality', keys: ['type_mismatch', 'skiptrace_mismatch', 'owner_verify', 'co_insured_verify', 'coinsured_contact_mix', 'contact_coverage'] },
   { label: 'Producer work', keys: ['call_outcome'] },
   { label: 'Outreach', keys: ['emails_insured', 'emails_all', 'referral', 'blast_skiptrace', 'recapture_log', 'keyword'] },
   { label: 'Opportunity', keys: ['already_ours'] },
