@@ -1,5 +1,6 @@
 import { sql } from '@/lib/neon';
 import { cohortCode, cohortLabel, cohortEnd } from './cohort';
+import { REACHING_OUTCOMES } from '@/lib/callOutcomes';
 
 /**
  * The workflow board (Frank, 29 Sep 2026).
@@ -129,11 +130,12 @@ export async function getWorkflowBoard(params: {
   /**
    * A reply nobody has answered.
    *
-   * "Answered" means somebody RANG them. A reply classified as not interested or as a stop
-   * is not owed an answer — the class already said what happens — so only the ones that want
-   * a human are counted, plus the unclassified, which want a human to decide.
+   * "Answered" means somebody got back to them — spoke to them on the phone, or wrote back.
+   * A reply classified as not interested or as a stop is not owed an answer — the class
+   * already said what happens — so only the ones that want a human are counted, plus the
+   * unclassified, which want a human to decide.
    *
-   * It closes itself when a call is logged after the reply, so nothing has to be ticked off.
+   * It closes itself when that answer is recorded, so nothing has to be ticked off.
    */
   const replies = await sql`
     SELECT o."leadId", l."propertyId", l."cohort", l."effectiveDate",
@@ -147,9 +149,30 @@ export async function getWorkflowBoard(params: {
        AND (o."replyClass" IS NULL
             OR o."replyClass" IN ('interested','question','wrong_timing'))
        AND l."boundDate" IS NULL AND l."lostAt" IS NULL
+       /*
+        * Answered on ANY channel — not merely dialled.
+        *
+        * This closed on any call attempt after the reply, which is not the same thing as
+        * answering somebody. Michael Odrobinak replied on 5 Oct saying he would ring us;
+        * four calls were logged three hours later — three "bad number" and one "no answer",
+        * so nobody spoke to him and his number does not work — and the board took him off
+        * as handled. A homeowner who raised his hand, cannot be reached by phone, and is
+        * now invisible on the one screen that tracks what is owed.
+        *
+        * So a call closes it only when the outcome says somebody was REACHED, and an email
+        * closes it too: replying from the Replies tab writes that activity row, and an
+        * emailed answer is an answer even though no call was made.
+        */
        AND NOT EXISTS (
          SELECT 1 FROM "CallAttempt" a
-          WHERE a."leadId" = o."leadId" AND a."attemptedAt" > o."repliedAt")
+          WHERE a."leadId" = o."leadId"
+            AND a."attemptedAt" > o."repliedAt"
+            AND a."outcome" = ANY(${[...REACHING_OUTCOMES]}::text[]))
+       AND NOT EXISTS (
+         SELECT 1 FROM "Activity" act
+          WHERE act."leadId" = o."leadId"
+            AND act."type" = 'email'
+            AND act."createdAt" > o."repliedAt")
        AND (${from}::text IS NULL OR l."effectiveDate" >= ${from})
        AND (${to}::text   IS NULL OR l."effectiveDate" <= ${to})` as Array<Record<string, any>>;
 

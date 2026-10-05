@@ -133,7 +133,14 @@ export async function reconcileSentContent(opts: {
       }
 
       cursor = nextCursor;
-      if (!nextCursor || !items.length) { exhausted = true; break; }
+      /*
+       * A short page is the end of the list.
+       *
+       * The platform returns a cursor on every page including the last, so stopping only
+       * on a missing cursor spent one extra request per run to be told there was nothing
+       * left — and this runs against a budget of twenty requests a minute.
+       */
+      if (!nextCursor || items.length < pageSize) { exhausted = true; break; }
     }
   } finally {
     client.release();

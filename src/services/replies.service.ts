@@ -1,7 +1,10 @@
 import { sql } from '@/lib/neon';
-import { listEmailsPage, replyToEmail, type VendorEmail } from '@/lib/integrations/leadCampaign';
+import {
+  listInboundEmails, listEmailsForContact, replyToEmail, type VendorEmail,
+} from '@/lib/integrations/leadCampaign';
 import { suppress } from './suppression.service';
 import { REPLY_CLASSES, type ReplyClass } from '@/lib/replyClasses';
+import { htmlToPlainLines } from '@/lib/replyBody';
 
 /**
  * The reply inbox (directive Sec. 7.6, Sec. 10.8).
@@ -66,11 +69,20 @@ export type ReplyThread = {
   classifiedBy: string | null;
 };
 
+/**
+ * The message as text, and the html it came from.
+ *
+ * The html fallback had its own stripper, which matched `<br\s*\/?>` and so missed a break
+ * carrying an attribute — the kind Apple Mail puts above a signature — and dropped every
+ * other block boundary entirely. The result was one long line, and the quoted-history split
+ * downstream is anchored to line starts, so it had nothing to work with. One shared strip
+ * now, with the lines kept.
+ */
 const bodyText = (e: VendorEmail): { text: string; html: string | null } => {
   const b = e.body;
   if (typeof b === 'string') return { text: b, html: null };
   const html = b?.html ?? null;
-  const text = b?.text ?? (html ? html.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '') : '');
+  const text = b?.text ?? (html ? htmlToPlainLines(html).trim() : '');
   return { text, html };
 };
 
@@ -101,31 +113,72 @@ const directionOf = (e: VendorEmail): 'in' | 'out' => {
  * elsewhere. Including them would bury the handful of messages someone has to act on
  * under every email the cohort ever sent.
  */
+/**
+ * How many conversations get their full history fetched on one load.
+ *
+ * Hydration costs one request per person who has replied, and the platform allows twenty
+ * a minute in total. Past this many, the newest replies are hydrated and the rest are
+ * still LISTED from the reply itself — see the note in listThreads. Showing a thread
+ * without its history is a smaller failure than not showing it at all.
+ */
+const HYDRATE_LIMIT = 12;
+
 export async function listThreads(
   opts: { limit?: number; campaignId?: string } = {},
 ): Promise<ReplyThread[]> {
   /**
-   * Paged, because the platform caps a single call at 100 messages and an inbox needs
-   * more than that. One send and one reply is two messages, so 100 covers roughly fifty
-   * conversations — fine for a test, useless for a 660-lead cohort in its second week.
+   * ── Ask for the replies, not for everything ───────────────────────────────
    *
-   * Paging stops at MAX_PAGES rather than draining the account: this is a screen someone
-   * is waiting on, and reading ten thousand messages to show the twenty that need
-   * answering would make it unusable. Newest first, so the cap drops the oldest threads,
-   * which are the ones least likely to still need a reply.
+   * This used to page the entire message feed — up to ten requests of a hundred messages
+   * — and throw almost all of it away. In a workspace of 1,007 messages, 998 were
+   * automated sends and 6 were replies. Two costs came out of that:
+   *
+   *   The platform allows twenty requests a minute and this spent ten of them on one
+   *   page load, so a second refresh inside the minute failed and the tab read "Could
+   *   not read the inbox".
+   *
+   *   The feed is newest-first and the page cap is ten, so only the most recent ~1,000
+   *   messages were ever examined. At 250-1,200 sends a week a reply would eventually
+   *   age off the end of that window and disappear from the inbox while still unanswered
+   *   — the exact failure this screen exists to prevent, arriving silently and on a
+   *   schedule.
+   *
+   * `email_type=received` returns inbound messages only, so discovery is now proportional
+   * to the number of people who have replied rather than to how much mail we send.
    */
-  const want = opts.limit ?? 400;
-  const MAX_PAGES = 10;
-  const emails: VendorEmail[] = [];
-  let cursor: string | undefined;
-  for (let page = 0; page < MAX_PAGES && emails.length < want; page++) {
-    const { items, nextCursor } = await listEmailsPage({
-      limit: 100, startingAfter: cursor, campaignId: opts.campaignId,
-    });
-    emails.push(...items);
-    if (!nextCursor || !items.length) break;
-    cursor = nextCursor;
+  const inbound = await listInboundEmails({ campaignId: opts.campaignId });
+
+  /**
+   * The rest of each conversation, newest reply first.
+   *
+   * Our own sends are needed for the thread the producer reads, and for the two numbers
+   * Sec. 10.8 measures — whether the answer is still owed, and how long it took. They
+   * come per CONTACT rather than per thread because `thread_id` is not a filter this
+   * platform honours; `lead=<address>` is, and it returns both directions.
+   */
+  const newestFirst = [...inbound].sort(
+    (a, b) => String(b.timestamp_email ?? '').localeCompare(String(a.timestamp_email ?? '')),
+  );
+  const contacts: string[] = [];
+  for (const e of newestFirst) {
+    const from = String(e.from_address_email ?? '').toLowerCase();
+    if (from && !contacts.includes(from)) contacts.push(from);
   }
+
+  const emails: VendorEmail[] = [];
+  const seen = new Set<string>();
+  const add = (e: VendorEmail) => {
+    if (!e.id || seen.has(e.id)) return;
+    seen.add(e.id);
+    emails.push(e);
+  };
+
+  for (const contact of contacts.slice(0, HYDRATE_LIMIT)) {
+    for (const e of await listEmailsForContact(contact)) add(e);
+  }
+  // Beyond the hydration limit the reply itself still makes a thread — one message long,
+  // which reads as awaiting an answer. That is true, and it is the safe direction to err.
+  for (const e of inbound) add(e);
 
   const byThread = new Map<string, VendorEmail[]>();
   for (const e of emails) {
@@ -188,7 +241,17 @@ export async function listThreads(
     if (a.awaitingReply !== b.awaitingReply) return a.awaitingReply ? -1 : 1;
     return String(b.lastInboundAt ?? '').localeCompare(String(a.lastInboundAt ?? ''));
   });
-  return threads;
+
+  /*
+   * `limit` caps CONVERSATIONS now, not messages.
+   *
+   * It used to bound how much of the message feed was read, which made it a budget on
+   * requests rather than on anything the caller cared about. Discovery is one query per
+   * hundred replies now, so the cap belongs where it is meaningful — and it is applied
+   * after the sort, so what gets dropped is the oldest already-answered thread rather
+   * than whatever the feed happened to return last.
+   */
+  return opts.limit && threads.length > opts.limit ? threads.slice(0, opts.limit) : threads;
 }
 
 /**

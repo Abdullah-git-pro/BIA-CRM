@@ -125,6 +125,21 @@ export const CALL_OUTCOME_LABEL: Record<CallOutcome, string> = Object.fromEntrie
 ) as Record<CallOutcome, string>;
 
 /**
+ * The outcomes where somebody was actually spoken to.
+ *
+ * Derived from the table above rather than typed out again, so a new outcome cannot be
+ * added that reaches a person and gets left off this list.
+ *
+ * The workflow board reads it to decide whether a reply has been answered. It used to
+ * close a reply on ANY attempt, which meant three "bad number" results and one "no answer"
+ * took a homeowner off the board without a word being exchanged — see the note on the
+ * board's reply query.
+ */
+export const REACHING_OUTCOMES: readonly CallOutcome[] = CALL_OUTCOMES
+  .filter((o) => o.reached)
+  .map((o) => o.key);
+
+/**
  * Derived from the attempts, never typed.
  *
  * ── Why "contacted" was split ───────────────────────────────────────────────

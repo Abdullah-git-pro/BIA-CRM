@@ -18,16 +18,66 @@
  *   • Campaign analytics for every campaign comes back from ONE call, so the
  *     overview never needs N+1 per-campaign requests.
  *
- * No retries and no backoff: one fetch per logical call, errors thrown plainly for
- * the route layer to map to a 502. Pagination loops carry a hard page ceiling as a
- * defence against an infinite loop on a vendor bug, not as rate limiting.
+ * Errors are thrown plainly for the route layer to map to a 502. Pagination loops carry
+ * a hard page ceiling as a defence against an infinite loop on a vendor bug.
+ *
+ * ── The rate limit, which the vendor does not advertise ───────────────────────
+ * Verified 5 Oct 2026: the 21st request in a minute comes back
+ *
+ *   429 {"message":"Rate limit exceeded. Maximum 20 requests per minute allowed."}
+ *
+ * and there is no `X-RateLimit-*` header and no `Retry-After` on any response, so the
+ * only way to know is to count. Every call goes through `limiter`, and a 429 that slips
+ * past it is retried rather than thrown — see the note on apiFetch.
  */
+
+import { RateLimiter, RateLimitExceededError } from '@/lib/rateLimit';
 
 const API_BASE = 'https://api.instantly.ai/api/v2';
 
 /** Defensive ceiling on any pagination loop — not rate limiting. */
 const MAX_PAGES = 10;
 const PAGE_SIZE = 100;
+
+/**
+ * 18 of the vendor's 20, because the two windows are not the same clock.
+ *
+ * The vendor's minute starts whenever it decides; ours starts at the first request we
+ * count. Near a boundary our "20th" can be its "21st", so the last two are left unused
+ * and the retry below absorbs the rest.
+ */
+const RATE_BUDGET = 18;
+const RATE_WINDOW_MS = 60_000;
+/**
+ * How long a caller will queue for a slot.
+ *
+ * A route handler is waiting on this and the platform it runs on has its own timeout, so
+ * the queue has to stay well inside one. Eight seconds absorbs an ordinary burst; past
+ * that the budget is genuinely oversubscribed and a person should be told rather than
+ * left watching a spinner.
+ */
+const RATE_MAX_WAIT_MS = 8_000;
+/**
+ * The pause after the vendor says we are over the limit.
+ *
+ * Shorter than the window on purpose: the limit is a rolling minute, so slots free up
+ * continuously and a full 60-second sit-out is both unnecessary and longer than any
+ * caller can wait. Must stay below RATE_MAX_WAIT_MS or the retry cannot survive its own
+ * cooldown — which is exactly the bug that made one 429 fail every request for a minute.
+ */
+const RATE_COOLDOWN_MS = 6_000;
+const RETRY_429_TIMES = 1;
+
+const limiter = new RateLimiter({
+  budget: RATE_BUDGET,
+  windowMs: RATE_WINDOW_MS,
+  maxWaitMs: RATE_MAX_WAIT_MS,
+});
+
+/** Slots left in this process's window. For diagnostics — never branch on it. */
+export function rateBudgetRemaining(): number {
+  return limiter.available();
+}
 
 function apiKey(): string {
   const key = process.env.LEADS_CAMPAIGN_API_KEY;
@@ -55,11 +105,53 @@ async function apiFetch(path: string, init: RequestInit = {}): Promise<Response>
     ...(init.headers as Record<string, string> ?? {}),
   };
 
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers,
-    signal: AbortSignal.timeout(30000),
-  });
+  /*
+   * ── Budget first, then the request; a 429 is retried, not thrown ───────────
+   *
+   * `limiter.take()` waits for a slot rather than failing, so a busy minute makes this
+   * slower instead of breaking the caller. A 429 can still arrive — another serverless
+   * instance sharing the key, or the vendor's window not lining up with ours — and when
+   * it does the local count is wrong, so the budget is marked spent and we wait out a
+   * full window before trying again.
+   *
+   * Retried only RETRY_429_TIMES: beyond that the key is genuinely oversubscribed and a
+   * person should be told, not kept waiting.
+   */
+  let res: Response | null = null;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await limiter.take();
+    } catch (err) {
+      if (err instanceof RateLimitExceededError) {
+        throw new Error(
+          'Campaign tool is busy — it allows 20 requests a minute, and that budget is '
+          + 'shared by everyone using the CRM. Give it a few seconds and try again.',
+        );
+      }
+      throw err;
+    }
+
+    res = await fetch(`${API_BASE}${path}`, {
+      ...init,
+      headers,
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (res.status !== 429) break;
+
+    // Body must be read even when discarded, or the connection is held open.
+    await res.text().catch(() => '');
+    // The cooldown is all the waiting there is: the next take() sits out whatever is
+    // left of it, so there is no second sleep here to double the delay.
+    limiter.block(RATE_COOLDOWN_MS);
+    if (attempt >= RETRY_429_TIMES) {
+      throw new Error(
+        'Campaign tool is rate limited — it allows 20 requests a minute, and that budget '
+        + 'is shared by everyone using the CRM. Give it a few seconds and try again.',
+      );
+    }
+  }
+
   if (!res.ok) {
     const bodyText = await res.text().catch(() => '');
     // Deliberately says "Campaign tool", not the vendor's name: these messages reach
@@ -75,6 +167,21 @@ const getJson = async <T>(path: string): Promise<T> => (await apiFetch(path)).js
 const postJson = async <T>(path: string, body: unknown): Promise<T> =>
   (await apiFetch(path, { method: 'POST', body: JSON.stringify(body) })).json() as Promise<T>;
 
+/**
+ * True when a page cannot be followed by another — so the cursor is not worth a request.
+ *
+ * ── Why a cursor is not enough to go on ───────────────────────────────────────
+ * This vendor returns `next_starting_after` on EVERY page, including the last one. Trusting
+ * it meant every pager ended with a request that came back empty: reading the six replies
+ * in the inbox cost two requests instead of one, and each conversation another two instead
+ * of one — half of a twenty-per-minute budget spent proving there was nothing left.
+ *
+ * A page shorter than the page size cannot have more behind it, so that is the real
+ * end-of-list signal. The cursor is still honoured for a full page.
+ */
+const lastPage = (items: unknown[], pageSize: number, cursor?: string | null): boolean =>
+  !cursor || !items.length || items.length < pageSize;
+
 /** Walk a cursor-paginated list endpoint to the page ceiling. */
 async function paginate<T>(path: string): Promise<T[]> {
   const out: T[] = [];
@@ -83,8 +190,9 @@ async function paginate<T>(path: string): Promise<T[]> {
     const sep = path.includes('?') ? '&' : '?';
     const url = `${path}${sep}limit=${PAGE_SIZE}${cursor ? `&starting_after=${encodeURIComponent(cursor)}` : ''}`;
     const json = await getJson<{ items?: T[]; next_starting_after?: string }>(url);
-    out.push(...(json.items ?? []));
-    if (!json.next_starting_after) break;
+    const items = json.items ?? [];
+    out.push(...items);
+    if (lastPage(items, PAGE_SIZE, json.next_starting_after)) break;
     cursor = json.next_starting_after;
   }
   return out;
@@ -629,6 +737,93 @@ export async function listEmailsPage(opts: {
     `/emails?${params.toString()}`,
   );
   return { items: json.items ?? [], nextCursor: json.next_starting_after ?? null };
+}
+
+/**
+ * ── Which /emails query parameters are real ───────────────────────────────────
+ *
+ * This vendor answers 200 and ignores a parameter it does not recognise, so a filter
+ * that does nothing is indistinguishable from one that works unless you check the rows
+ * that come back. Probed 5 Oct 2026 against a workspace of 1,007 messages:
+ *
+ *   HONOURED   email_type=received | sent    the only message-direction filter
+ *              lead=<address>                every message to or from one address
+ *              search=<address>              same result for an address
+ *              campaign_id=<id>
+ *              starting_after=<id>, limit (<= 100)
+ *
+ *   IGNORED    ue_type=, i_status=, thread_id=, lead_email=, contact=, assigned_to=
+ *              — all return the UNFILTERED feed with a 200.
+ *
+ *   REJECTED   email_type=<anything else>    400, it is a validated enum
+ *
+ * `email_type` takes the words, not the numbers: `received` returns ue_type 2 only and
+ * `sent` returns ue_type 1. Numeric values 0-3 are all 400s.
+ */
+
+/**
+ * Every inbound reply, newest first.
+ *
+ * This is what the reply inbox is actually looking for, and asking for it directly is
+ * the difference between 2 requests and 10. The inbox used to page the whole message
+ * feed and discard it: of 1,007 messages, 998 were automated sends and 6 were replies.
+ *
+ * It also removes a ceiling that was going to start losing replies. The feed is newest
+ * first and the page cap is 10, so only the most recent ~1,000 messages were ever
+ * examined; at 250-1,200 sends a week, a reply from a fortnight ago would have fallen
+ * off the end and vanished from the inbox while still owed an answer. There is no such
+ * cliff here, because the cap now applies to replies rather than to all traffic.
+ */
+export async function listInboundEmails(opts: {
+  campaignId?: string;
+  maxPages?: number;
+} = {}): Promise<VendorEmail[]> {
+  const out: VendorEmail[] = [];
+  let cursor: string | undefined;
+  const pages = Math.min(opts.maxPages ?? MAX_PAGES, MAX_PAGES);
+
+  for (let page = 0; page < pages; page++) {
+    const params = new URLSearchParams({ limit: String(PAGE_SIZE), email_type: 'received' });
+    if (opts.campaignId) params.set('campaign_id', opts.campaignId);
+    if (cursor) params.set('starting_after', cursor);
+    const json = await getJson<{ items?: VendorEmail[]; next_starting_after?: string }>(
+      `/emails?${params.toString()}`,
+    );
+    const items = json.items ?? [];
+    out.push(...items);
+    if (lastPage(items, PAGE_SIZE, json.next_starting_after)) break;
+    cursor = json.next_starting_after;
+  }
+  return out;
+}
+
+/**
+ * Every message to or from one address — both directions, so a whole conversation.
+ *
+ * `lead=` is the filter that makes this possible; `thread_id=` looks like the obvious
+ * choice and is silently ignored, which would have returned the entire feed dressed up
+ * as one thread.
+ */
+export async function listEmailsForContact(
+  email: string,
+  opts: { maxPages?: number } = {},
+): Promise<VendorEmail[]> {
+  const out: VendorEmail[] = [];
+  let cursor: string | undefined;
+  const pages = Math.min(opts.maxPages ?? 3, MAX_PAGES);
+
+  for (let page = 0; page < pages; page++) {
+    const params = new URLSearchParams({ limit: String(PAGE_SIZE), lead: email });
+    if (cursor) params.set('starting_after', cursor);
+    const json = await getJson<{ items?: VendorEmail[]; next_starting_after?: string }>(
+      `/emails?${params.toString()}`,
+    );
+    const items = json.items ?? [];
+    out.push(...items);
+    if (lastPage(items, PAGE_SIZE, json.next_starting_after)) break;
+    cursor = json.next_starting_after;
+  }
+  return out;
 }
 
 // ─── Campaign lifecycle (verified: all of these routes exist) ─────────────────

@@ -8,6 +8,7 @@ import {
 import ReplyIcon from '@mui/icons-material/Reply';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { REPLY_CLASSES, type ReplyClass } from '@/lib/replyClasses';
+import { splitQuotedReply } from '@/lib/replyBody';
 
 /**
  * The reply inbox (directive Sec. 7.6, Sec. 10.8).
@@ -48,12 +49,12 @@ const when = (s: string | null) => {
  * A reply arrives with the entire thread quoted underneath it. Showing that inline buries
  * the two sentences the person actually wrote under three screens of our own copy, and the
  * two sentences are the whole job.
+ *
+ * This had its own matcher and it did not fire on the most common client of all: Apple
+ * Mail writes the attribution line inside the quote block, so the line starts with ">" and
+ * `\s*` never reached it. Michael Odrobinak's one-line reply rendered as thirty-one lines.
+ * It is shared with the webhook's excerpt now so the two cannot drift apart again.
  */
-const splitQuoted = (text: string): { body: string; quoted: string } => {
-  const m = text.match(/\n\s*(On .+ wrote:|-{2,}\s*Original Message|_{5,})/);
-  if (!m || m.index == null) return { body: text.trim(), quoted: '' };
-  return { body: text.slice(0, m.index).trim(), quoted: text.slice(m.index).trim() };
-};
 
 export default function CampaignRepliesPanel({ campaignId }: { campaignId?: string }) {
   const [threads, setThreads] = useState<Thread[]>([]);
@@ -217,7 +218,7 @@ export default function CampaignRepliesPanel({ campaignId }: { campaignId?: stri
               </Typography>
               {!isOpen && (
                 <Typography variant="body2" noWrap sx={{ mt: 0.5, color: '#5a6675' }}>
-                  {splitQuoted(last?.text ?? '').body || '(no text)'}
+                  {splitQuotedReply(last?.text ?? '').body || '(no text)'}
                 </Typography>
               )}
             </Box>
@@ -226,7 +227,7 @@ export default function CampaignRepliesPanel({ campaignId }: { campaignId?: stri
               <Box sx={{ px: 1.75, pb: 1.75 }}>
                 <Divider sx={{ mb: 1.5 }} />
                 {t.messages.map((m) => {
-                  const { body, quoted } = splitQuoted(m.text);
+                  const { body, quoted } = splitQuotedReply(m.text);
                   const key = `${t.threadId}:${m.id}`;
                   return (
                     <Box

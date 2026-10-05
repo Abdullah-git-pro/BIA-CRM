@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { htmlToPlainLines, splitQuotedReply } from '@/lib/replyBody';
 
 /**
  * Inbound campaign-webhook verification and payload normalisation.
@@ -149,15 +150,7 @@ export function readPayload(body: any) {
  */
 export function htmlToText(raw: string | null, max = 2000): string | null {
   if (!raw) return null;
-  const text = raw
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  const text = htmlToPlainLines(raw).trim();
   if (!text) return null;
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
@@ -168,26 +161,16 @@ export function htmlToText(raw: string | null, max = 2000): string | null {
  */
 export function cleanReplyExcerpt(raw: string | null, max = 500): string | null {
   if (!raw) return null;
-  let text = raw
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ');
-
-  const cutMarkers = [
-    /^\s*On .+ wrote:\s*$/im,        // Gmail / Apple Mail
-    /^\s*-{2,}\s*Original Message/im,
-    /^\s*_{5,}\s*$/m,                 // Outlook divider
-    /^\s*From:\s.+$/im,
-    /^\s*--\s*$/m,                    // signature delimiter
-    /^\s*Sent from my /im,
-  ];
-  for (const marker of cutMarkers) {
-    const m = text.match(marker);
-    if (m?.index != null) text = text.slice(0, m.index);
-  }
-  // Drop leading ">" quote lines that survived.
-  text = text.split('\n').filter((l) => !/^\s*>/.test(l)).join('\n');
-  text = text.replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/\s+/g, ' ').trim();
+  /*
+   * The marker list used to live here, and it matched `^\s*On .+ wrote:` — which misses
+   * the attribution line Apple Mail writes INSIDE the quote block, because `\s` does not
+   * match ">". Both halves are shared with the reply inbox now, so the stored excerpt and
+   * the screen cut at the same place. See src/lib/replyBody.ts.
+   *
+   * replyText prefers the payload's plain text and falls back to the HTML, so both shapes
+   * arrive here; the strip is a no-op on text that carries no markup.
+   */
+  const text = splitQuotedReply(htmlToPlainLines(raw)).body.replace(/\s+/g, ' ').trim();
   if (!text) return null;
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
