@@ -7,7 +7,8 @@ import { suppress, suppressionFor } from './suppression.service';
 import { addActivity } from './storage.service';
 import { closeRemindersForCall } from './callReminder.service';
 import {
-  CALL_OUTCOMES, CALL_OUTCOME_LABEL, UNREACHABLE_RULE, STATUS_FOR_OUTCOME,
+  CALL_OUTCOMES, CALL_OUTCOME_LABEL, STATUS_FOR_OUTCOME,
+  meetsUnreachableRule,
   NOT_INTERESTED_RECONTACT_DAYS_BEFORE_RENEWAL,
   type CallOutcome, type CallStatus,
 } from '@/lib/callOutcomes';
@@ -232,16 +233,17 @@ export async function callState(lead: Record<string, unknown>): Promise<CallStat
   const contacted = rows.some((r) => reachedOutcomes.has(r.outcome));
 
   /**
-   * All three conditions, and the numbers one is waived when the card only ever had one
-   * — "two or more numbers WHERE THEY EXIST". Without that clause a single-number lead
-   * could never retire, and Ruben would dial it forever.
+   * All three conditions, from the shared rule in @/lib/callOutcomes.
+   *
+   * It used to be spelled out here, and the QC report spelled out a different two-thirds of
+   * it. One function now, called from both.
    */
-  const enoughNumbers = onCard.length < UNREACHABLE_RULE.minDistinctNumbers
-    || numbersTried.length >= UNREACHABLE_RULE.minDistinctNumbers;
-  const unreachable = !contacted
-    && rows.length >= UNREACHABLE_RULE.minAttempts
-    && distinctDays >= UNREACHABLE_RULE.minDistinctDays
-    && enoughNumbers;
+  const unreachable = !contacted && meetsUnreachableRule({
+    attempts: rows.length,
+    distinctDays,
+    distinctNumbersTried: numbersTried.length,
+    numbersOnCard: onCard.length,
+  });
 
   /**
    * The status follows the LATEST outcome that reached somebody (Frank, 25 Sep 2026).

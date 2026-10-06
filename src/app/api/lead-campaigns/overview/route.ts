@@ -29,7 +29,7 @@ export async function GET(request: NextRequest) {
       const sent = a?.emails_sent_count ?? 0;
       // Rates are computed here so every surface reports them the same way. Percentages
       // are of emails SENT, not of leads — a lead that never got mailed should not drag
-      // an open rate down.
+      // an open rate down. Always fed a UNIQUE counter: see the note where they are read.
       const rate = (n: number | undefined) => (sent > 0 ? Math.round(((n ?? 0) / sent) * 1000) / 10 : null);
       // Lead count comes from the real lead list, NOT analytics. Analytics omits
       // campaigns with no send activity altogether, so a draft holding 300 leads
@@ -61,13 +61,28 @@ export async function GET(request: NextRequest) {
          */
         completed: a?.completed_count ?? 0,
         sent,
-        opens: a?.open_count ?? 0,
-        replies: a?.reply_count ?? 0,
-        clicks: a?.link_click_count ?? 0,
+        /*
+         * People, not events — and the rate is built on the same number shown beside it.
+         *
+         * These were the TOTAL counters while a campaign's own page used the UNIQUE ones,
+         * so the same campaign read higher here than on its own page whenever one person
+         * opened twice. Same label, two definitions: exactly the fault the handbook's
+         * Part 7 is about. Unique is the honest answer to "how many people opened", and
+         * it is what the rest of the CRM counts, so the list now agrees with the page.
+         *
+         * The totals are still published beside them for anyone who wants raw volume.
+         */
+        opens: a?.open_count_unique ?? 0,
+        replies: a?.reply_count_unique ?? 0,
+        clicks: a?.link_click_count_unique ?? 0,
+        totalOpens: a?.open_count ?? 0,
+        totalReplies: a?.reply_count ?? 0,
+        totalClicks: a?.link_click_count ?? 0,
         bounced: a?.bounced_count ?? 0,
         unsubscribed: a?.unsubscribed_count ?? 0,
-        openRate: rate(a?.open_count),
-        replyRate: rate(a?.reply_count),
+        openRate: rate(a?.open_count_unique),
+        replyRate: rate(a?.reply_count_unique),
+        // A bounce is already one per recipient, so there is no unique variant to prefer.
         bounceRate: rate(a?.bounced_count),
       };
     });

@@ -224,3 +224,39 @@ export const UNREACHABLE_RULE = {
   minDistinctDays: 3,
   minDistinctNumbers: 2,
 } as const;
+
+/**
+ * The stop rule itself, as a function, so there is exactly one of it.
+ *
+ * ── Why this was extracted ──────────────────────────────────────────────────
+ * There were two implementations. The lead card applied all three conditions; the
+ * call_outcome QC report applied only `attempts >= 4 && days >= 3` and never looked at how
+ * many different numbers had been dialled. So the report could retire a lead the card still
+ * considered live — four calls to one number, with a second number on the card never tried.
+ *
+ * Nothing had gone wrong yet: on 6 Oct 2026 only 29 leads had any attempt at all and none
+ * met either version of the rule, so the two agreed by accident. That is the point at which
+ * to fix it — the first lead to reach four attempts would have been reported two ways, and
+ * the phone funnel's unreachable rate is built on the report.
+ *
+ * `numbersOnCard` is the count of DIALLABLE numbers the card holds, which has to be derived
+ * from the trace payload and not from the phone columns alone — a card whose second number
+ * exists only in the payload would otherwise look like a single-number card and be retired
+ * early. That is the column-vs-payload fault, and it is why this takes a count rather than
+ * digging the numbers out itself.
+ */
+export function meetsUnreachableRule(input: {
+  attempts: number;
+  distinctDays: number;
+  distinctNumbersTried: number;
+  numbersOnCard: number;
+}): boolean {
+  // "two or more numbers WHERE THEY EXIST" — waived for a card that only ever had one, or
+  // a single-number lead could never retire and would be dialled for ever.
+  const enoughNumbers = input.numbersOnCard < UNREACHABLE_RULE.minDistinctNumbers
+    || input.distinctNumbersTried >= UNREACHABLE_RULE.minDistinctNumbers;
+
+  return input.attempts >= UNREACHABLE_RULE.minAttempts
+    && input.distinctDays >= UNREACHABLE_RULE.minDistinctDays
+    && enoughNumbers;
+}

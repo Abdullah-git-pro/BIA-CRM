@@ -1,5 +1,8 @@
 import { sql } from '@/lib/neon';
-import { STATUS_FOR_OUTCOME, type CallStatus, type CallOutcome } from '@/lib/callOutcomes';
+import {
+  STATUS_FOR_OUTCOME, UNREACHABLE_RULE, meetsUnreachableRule,
+  type CallStatus, type CallOutcome,
+} from '@/lib/callOutcomes';
 import { mergeVarsFor } from './mergeVars.service';
 import { eligibilityReasonLabel } from '@/types/carrier';
 import { compareOwnerNames } from './ownerNameMatch.service';
@@ -8,6 +11,10 @@ import {
   contactabilityOf, householdReach, channelOf, isDirectMailOnly,
   type Contactability, type Channel,
 } from './contactability.service';
+// numbersOnCard derives the card's dialable numbers from the trace payload, which is the
+// only correct source for the stop rule's third condition. callLog.service does not import
+// this file, so there is no cycle.
+import { numbersOnCard } from './callLog.service';
 import { cohortLabel } from './cohort';
 import { classifyGradeChange } from './gradeChangeReason';
 import { agencyWebsite } from './mergeVars.service';
@@ -598,6 +605,10 @@ export async function getQcReport(type: QcReportType, params: QcReportParams = {
                -- call placed at 11pm in New Jersey on the following day — splitting one
                -- evening across two, which is what the 3+ day unreachable rule counts.
                COUNT(DISTINCT ("attemptedAt" AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')::date)::int AS days,
+               -- The third condition of the stop rule. Counted here because the rule needs
+               -- it; this report used to apply only the attempts and days conditions and
+               -- could therefore retire a lead the card still considered live.
+               COUNT(DISTINCT "numberDialled")::int                      AS numbers_tried,
                MAX("attemptedAt")                                       AS last_at,
                BOOL_OR("outcome" IN ('callback_scheduled','quote_requested',
                                      'not_interested','do_not_call'))   AS reached,
@@ -647,9 +658,29 @@ export async function getQcReport(type: QcReportType, params: QcReportParams = {
              l."travelersPremium", l."plymouthPremium",
              COALESCE(a.tries, 0)  AS call_tries,
              a.days                AS call_days,
+             a.numbers_tried       AS call_numbers_tried,
              a.last_at             AS call_last_at,
              a.reached             AS call_reached,
              a.last_outcome        AS call_last_outcome,
+             /*
+              * The latest outcome that REACHED somebody — computed in the CTE above since
+              * the ladder was written, and never selected here until 6 Oct 2026.
+              *
+              * The mapper read r.last_reached, which no row carried, so it was always
+              * undefined and the first rung of the ladder — "the status follows the latest
+              * reaching outcome" — could never fire. Every lead fell through to the
+              * attempts-based branch, so a household that had said "not interested" or
+              * "do not call" was reported as still being worked. Six of the 29 leads with
+              * any call history were in that state.
+              *
+              * It also silently emptied the phone funnel: "Reached" is counted by filtering
+              * this report for the four reaching statuses, so it could only ever be zero,
+              * and "attempts per contact" was blank for want of a denominator.
+              *
+              * Nothing threw. The column was simply absent, which is the same fault as the
+              * two tabs that disagreed over one unselected column.
+              */
+             a.last_reached        AS call_last_reached,
              a.last_by             AS call_last_by
         FROM "Lead" l
         LEFT JOIN attempts a ON a."leadId" = l."id"
@@ -680,27 +711,74 @@ export async function getQcReport(type: QcReportType, params: QcReportParams = {
           OR l."plymouthPremium" IS NOT NULL
        ORDER BY l."effectiveDate"`;
 
-    return rows
-      .filter((r: any) => inRange(iso(r.effectiveDate), effFrom, effTo))
+    const inWindow = rows.filter((r: any) => inRange(iso(r.effectiveDate), effFrom, effTo));
+
+    /**
+     * How many numbers each candidate's card holds — fetched for the few leads it decides.
+     *
+     * The stop rule's third condition needs the card's own number list, and that list comes
+     * from the trace payload rather than the phone columns (a second number often exists
+     * only in the payload, and a card that looks single-numbered gets retired early — the
+     * column-vs-payload fault).
+     *
+     * Reading the payload for every row would mean carrying a JSONB blob across ~7,800
+     * leads, which is exactly what the named-column SELECT above exists to avoid. It is
+     * only ever needed where a lead has already met the attempts and days conditions AND
+     * fewer than two numbers were dialled — on 6 Oct 2026 that was zero leads — so the
+     * candidates are collected first and looked up in one small query, or not at all.
+     */
+    const needsCardNumbers = inWindow.filter((r: Record<string, unknown>) => (
+      !r.call_last_reached
+      && Number(r.call_tries ?? 0) >= UNREACHABLE_RULE.minAttempts
+      && Number(r.call_days ?? 0) >= UNREACHABLE_RULE.minDistinctDays
+      && Number(r.call_numbers_tried ?? 0) < UNREACHABLE_RULE.minDistinctNumbers
+    )).map((r: Record<string, unknown>) => String(r.id));
+
+    const cardNumberCount = new Map<string, number>();
+    if (needsCardNumbers.length) {
+      const cards = await sql`
+        SELECT "id", "email1", "email2", "owner2Email",
+               "phone1", "phone2", "owner2Phone",
+               "owner1FirstName", "owner1LastName", "owner2FirstName", "owner2LastName",
+               "skipTraceData", "emailsAll"
+          FROM "Lead" WHERE "id" = ANY(${needsCardNumbers}::text[])` as Array<Record<string, unknown>>;
+      assertRecipientCols(cards[0], 'call_outcome unreachable rule');
+      for (const c of cards) {
+        cardNumberCount.set(String(c.id), numbersOnCard(c).length);
+      }
+    }
+
+    return inWindow
       .map((r: any) => {
         /**
          * The same ladder as callLog.service: reached wins, then the unreachable rule,
-         * then any attempt at all. `unreachable` is Frank's Sec. 10.5 stop rule — four
-         * attempts across three or more distinct days — and it is checked here rather
-         * than inferred from a count, because "four attempts in one afternoon" is not
-         * the same thing and treating it as such would retire a live lead.
+         * then any attempt at all.
+         *
+         * The stop rule itself is now the shared `meetsUnreachableRule`. This used to test
+         * `tries >= 4 && days >= 3` inline and never looked at how many different numbers
+         * had been dialled — two-thirds of a rule the lead card applied in full, so the
+         * report could retire a lead the card still considered live. Nothing had gone wrong
+         * yet only because no lead had reached four attempts.
          */
         const tries = Number(r.call_tries ?? 0);
         const days = Number(r.call_days ?? 0);
+        const numbersTried = Number(r.call_numbers_tried ?? 0);
         /**
          * The status follows the latest REACHING outcome — the same mapping the call panel
          * uses, imported rather than restated. Two derivations of one rule is how this
          * report and the card come to disagree about the same lead.
          */
-        const callStatus: CallStatus = (r.last_reached
-          ? STATUS_FOR_OUTCOME[r.last_reached as CallOutcome]
+        const callStatus: CallStatus = (r.call_last_reached
+          ? STATUS_FOR_OUTCOME[r.call_last_reached as CallOutcome]
           : undefined)
-          ?? ((tries >= 4 && days >= 3) ? 'unreachable'
+          ?? (meetsUnreachableRule({
+            attempts: tries,
+            distinctDays: days,
+            distinctNumbersTried: numbersTried,
+            // Absent only when the lead was not a candidate, in which case the numbers
+            // condition cannot change the answer and any value here is inert.
+            numbersOnCard: cardNumberCount.get(String(r.id)) ?? numbersTried,
+          }) ? 'unreachable'
             : tries ? 'attempting' : 'not_attempted');
 
         /**

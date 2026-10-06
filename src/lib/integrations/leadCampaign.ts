@@ -231,6 +231,20 @@ export type Campaign = {
   timestamp_created?: string;
 };
 
+/**
+ * Per-campaign counters for EVERY campaign, from one call.
+ *
+ * ── The unique counters were returned all along and never declared ───────────
+ * This type listed only the totals, so the campaigns list divided TOTAL opens by sends
+ * while a campaign's own page divided UNIQUE openers by sends. One label, two
+ * definitions, and the list read higher whenever somebody opened twice.
+ *
+ * The endpoint returns both — verified live 6 Oct 2026, the payload carries
+ * open_count_unique, reply_count_unique and link_click_count_unique beside the totals.
+ * Nothing was missing but the declaration, which is why nothing ever failed.
+ *
+ * Bounces have no unique variant and need none: a bounce is already per recipient.
+ */
 export type CampaignAnalytics = {
   campaign_id: string;
   campaign_name: string;
@@ -239,8 +253,12 @@ export type CampaignAnalytics = {
   contacted_count: number;
   emails_sent_count: number;
   open_count: number;
+  /** Distinct people who opened. This is the one a rate may be built on. */
+  open_count_unique?: number;
   reply_count: number;
+  reply_count_unique?: number;
   link_click_count: number;
+  link_click_count_unique?: number;
   bounced_count: number;
   unsubscribed_count: number;
   completed_count: number;

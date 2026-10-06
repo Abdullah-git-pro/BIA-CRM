@@ -32,8 +32,12 @@ type TabKey = 'campaigns' | 'mailboxes';
 type CampaignRow = {
   id: string; name: string; status: number; statusLabel: string;
   createdAt?: string | null;
-  leads: number; leadsTruncated?: boolean; contacted: number; completed: number; sent: number; opens: number; replies: number;
-  clicks: number; bounced: number; unsubscribed: number;
+  leads: number; leadsTruncated?: boolean; contacted: number; completed: number; sent: number;
+  /** PEOPLE who opened/replied/clicked, not events — the rates beside them use the same counter. */
+  opens: number; replies: number; clicks: number;
+  /** Raw event volume, kept for anyone who wants it. Never used for a rate. */
+  totalOpens?: number; totalReplies?: number; totalClicks?: number;
+  bounced: number; unsubscribed: number;
   openRate: number | null; replyRate: number | null; bounceRate: number | null;
 };
 
@@ -131,7 +135,7 @@ export default function LeadCampaignsPage() {
           <Table size="small" stickyHeader sx={stickyFirstColumn}>
             <TableHead>
               <TableRow>
-                {['Campaign', 'Status', 'Created', 'Progress', 'Leads', 'Sent', 'Opens', 'Replies', 'Clicks', 'Bounced', 'Unsub'].map((h) => (
+                {['Campaign', 'Status', 'Created', 'Progress', 'Leads', 'Sent', 'Opened', 'Replied', 'Clicked', 'Bounced', 'Unsub'].map((h) => (
                   <TableCell key={h} sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}>{h}</TableCell>
                 ))}
               </TableRow>
