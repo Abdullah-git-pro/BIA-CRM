@@ -168,22 +168,77 @@ export function numbersOnCard(lead: Record<string, unknown>): Array<{
    *
    *   1. Not DNC. A flagged number goes last, never removed — see dialable below for why
    *      it is still shown at all.
-   *   2. On the card before found by a trace. phone1, phone2 and owner2Phone were supplied
-   *      with the policy; a trace number is a guess about the same person.
-   *   3. Insured before co-insured. §1.5 makes the insured the person we want.
-   *   4. The vendor's own rank, where it gave one — 88% of these numbers carry it.
-   *   5. Mobile before landline. A mobile reaches a person; a landline reaches a house.
+   *   2. Insured before co-insured. §1.5 makes the insured the person we want.
+   *   3. The vendor's own rank — 88% of these numbers carry one.
+   *   4. Mobile before landline. A mobile reaches a person; a landline reaches a house.
+   *
+   * ── Why rank now outranks "came with the policy" ─────────────────────────
+   * The card-before-trace test used to sit above rank, on the reasoning that phone1 and
+   * phone2 were supplied with the policy while a trace number is a guess. Measured across
+   * the 752 Grade A cards from C1 onward that hold more than one number, it changes which
+   * number comes first on exactly ONE of them. It was costing rank its say for no
+   * practical gain, so rank is above it now and it survives only as the tiebreak below.
+   *
+   * ── Why rank is NOT the first thing sorted on ────────────────────────────
+   * Asked for on 6 Oct 2026, and measured before changing: sorting purely by rank moves
+   * the first number on 266 of those 752 cards, and on 160 of them the new first number is
+   * DNC-FLAGGED. 464 of the 965 numbers on C1-C3 cards carry that flag, so leading with one
+   * is not an edge case — it is the normal outcome. Whether a flagged number may be called
+   * at all is Frank and Adnan's decision, so DNC stays last until they make it.
+   *
+   * ── Why rank cannot outrank insured-before-co-insured either ─────────────
+   * The vendor ranks each PERSON's numbers separately. The insured's "rank 1" and the
+   * co-insured's "rank 1" are two different scales, so a global sort by rank silently
+   * compares numbers that were never ranked against each other — and in practice promotes
+   * the co-insured over the insured on cards where both were traced.
+   *
+   * A card number the vendor never ranked sorts as if it were rank 0 rather than last: it
+   * came with the policy, so "the vendor did not rank it" is not evidence against it, and
+   * treating a missing rank as the worst rank buried the policy's own number beneath
+   * speculative trace hits.
    */
   const CARD_LABELS = new Set(['phone1', 'phone2', 'owner2Phone']);
   const isMobile = (t: string | null) => /mobile|cell|wireless/i.test(String(t ?? ''));
+  const rankOf = (n: { rank: number | null; label: string }) =>
+    (n.rank ?? (CARD_LABELS.has(n.label) ? 0 : 99));
   out.sort((x, y) =>
     Number(x.dnc) - Number(y.dnc)
-    || Number(!CARD_LABELS.has(x.label)) - Number(!CARD_LABELS.has(y.label))
     || (x.role === y.role ? 0 : x.role === 'insured' ? -1 : 1)
-    || (x.rank ?? 99) - (y.rank ?? 99)
-    || Number(!isMobile(x.type)) - Number(!isMobile(y.type)));
+    || rankOf(x) - rankOf(y)
+    || Number(!isMobile(x.type)) - Number(!isMobile(y.type))
+    || Number(!CARD_LABELS.has(x.label)) - Number(!CARD_LABELS.has(y.label)));
 
   return out;
+}
+
+/** The numbers a "bad number" or "wrong person" outcome has retired, as plain digits. */
+export function invalidPhonesOf(lead: Record<string, unknown>): string[] {
+  return Array.isArray(lead.invalidPhones)
+    ? (lead.invalidPhones as unknown[]).map((n) => String(n ?? '').replace(/\D/g, '')).filter(Boolean)
+    : [];
+}
+
+/**
+ * The numbers actually worth ringing: on the card, not proven dead, not do-not-call.
+ *
+ * ── Why this exists rather than each screen filtering for itself ─────────────
+ * There were two definitions of "numbers we can call" and neither was this one.
+ *
+ *   the lead card   excluded numbers proven dead, and KEPT do-not-call ones — deliberately,
+ *                   because they are shown last and marked rather than hidden.
+ *   the Phone list  excluded do-not-call ones, and kept the dead ones.
+ *
+ * So the Phone screen's "4/7" counted numbers Ruben had already discovered do not work.
+ * On 16 Grade A cards from C1 onward it overstated what was left, and on two of them —
+ * Christopher Chinni at "2/4" and Yvonne Hernandez at "4/6" — there was nothing dialable
+ * at all. Worse than a wrong count: that screen SORTS by it, "most live numbers first", so
+ * the cards with nothing to ring sorted to the top of the call list.
+ *
+ * The card keeps its own, wider list for DISPLAY. This is the one for COUNTING.
+ */
+export function liveNumbersOnCard(lead: Record<string, unknown>): ReturnType<typeof numbersOnCard> {
+  const dead = new Set(invalidPhonesOf(lead));
+  return numbersOnCard(lead).filter((n) => !n.dnc && !dead.has(n.number));
 }
 
 /**

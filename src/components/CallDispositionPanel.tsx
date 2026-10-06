@@ -6,7 +6,10 @@ import {
   Box, Paper, Typography, Stack, Chip, Button, TextField, Alert, Divider, Tooltip,
 } from '@mui/material';
 import PhoneIcon from '@mui/icons-material/Phone';
-import { CALL_OUTCOMES, CALL_STATUS_LABEL, type CallOutcome, type CallStatus } from '@/lib/callOutcomes';
+import {
+  CALL_OUTCOMES, CALL_OUTCOME_LABEL, CALL_STATUS_LABEL,
+  type CallOutcome, type CallStatus,
+} from '@/lib/callOutcomes';
 
 /**
  * Logging a call (directive Sec. 10.5).
@@ -45,6 +48,41 @@ const fmtPhone = (n: string) => {
   const d = String(n).replace(/\D/g, '');
   return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : n;
 };
+
+/**
+ * The outcome in one or two words, for a chip that also has to hold a phone number.
+ *
+ * The full labels read "Reached — callback scheduled", which is right on the button that
+ * files it and far too long beside a number.
+ */
+const SHORT_OUTCOME: Record<CallOutcome, string> = {
+  no_answer: 'no answer',
+  voicemail: 'voicemail',
+  bad_number: 'bad number',
+  wrong_person: 'wrong person',
+  callback_scheduled: 'callback',
+  quote_requested: 'quoting',
+  not_interested: 'not interested',
+  do_not_call: 'do not call',
+};
+const shortOutcome = (o: CallOutcome) => SHORT_OUTCOME[o] ?? String(o).replace(/_/g, ' ');
+
+/**
+ * How long ago, in the coarsest unit that is still useful.
+ *
+ * "today" and "yesterday" are what a producer actually reasons with; an exact time only
+ * matters inside the same day, when the question is whether he has already tried this
+ * number this afternoon.
+ */
+function sinceLabel(at: string): string {
+  const then = new Date(at).getTime();
+  if (!Number.isFinite(then)) return '';
+  const mins = Math.floor((Date.now() - then) / 60000);
+  if (mins < 60) return `${Math.max(mins, 0)}m ago`;
+  if (mins < 24 * 60) return `${Math.floor(mins / 60)}h ago`;
+  const days = Math.floor(mins / (24 * 60));
+  return days === 1 ? 'yesterday' : `${days}d ago`;
+}
 
 /**
  * One colour per status, and the four that replaced "contacted" are deliberately not all
@@ -341,6 +379,23 @@ export default function CallDispositionPanel({ leadId }: { leadId: string }) {
     return <Paper variant="outlined" sx={{ p: 2 }}><Typography variant="body2" color="text.secondary">Loading call history…</Typography></Paper>;
   }
 
+  /**
+   * The most recent attempt on one number, or null if it has never been dialled.
+   *
+   * Matched on digits only. The attempt stores whatever was dialled and the card holds a
+   * cleaned copy, and comparing the two as written would make a number that HAS been
+   * tried look untouched — the exact fault this is here to fix.
+   */
+  const lastAttemptOn = (num: string): Attempt | null => {
+    const key = String(num).replace(/\D/g, '');
+    let best: Attempt | null = null;
+    for (const a of state.attempts) {
+      if (String(a.numberDialled).replace(/\D/g, '') !== key) continue;
+      if (!best || a.attemptedAt > best.attemptedAt) best = a;
+    }
+    return best;
+  };
+
   return (
     <Paper variant="outlined" sx={{ p: 2 }}>
       <Stack direction="row" sx={{ alignItems: 'center', gap: 1, mb: 1.5, flexWrap: 'wrap' }}>
@@ -399,33 +454,67 @@ export default function CallDispositionPanel({ leadId }: { leadId: string }) {
             flagged number may be called is a question for Frank and Adnan — the panel's job
             is to make sure nobody answers it by accident.
           */}
+          {/*
+            ── What already happened on each number, on the number ─────────────
+
+            Every attempt was listed underneath, and none of it reached the control
+            somebody dials from. On lead 197686734 all four numbers offered had been
+            tried the previous afternoon — four "no answer" in six minutes — and the
+            chips looked exactly like a card nobody had touched. The history was on
+            screen and in the wrong place: a producer reads the thing he is about to
+            click, not the log below it.
+
+            Shown as the outcome and when, because "tried" is not the useful fact. A
+            voicemail left an hour ago and a no-answer from last Tuesday are different
+            decisions, and the difference is what stops a number being redialled twice
+            in an afternoon.
+          */}
           <Stack direction="row" spacing={0.75} sx={{ mb: 1.5, flexWrap: 'wrap' }} useFlexGap>
-            {state.dialable.map((d) => (
-              <Tooltip
-                key={d.number}
-                arrow
-                title={[
-                  d.role === 'insured' ? 'The insured' : 'The co-insured',
-                  d.label === 'trace' ? 'found by a skip trace' : 'on the policy record',
-                  d.type ? d.type.toLowerCase() : null,
-                  d.rank != null ? `vendor rank ${d.rank}` : null,
-                  d.dnc ? 'ON THE DO-NOT-CALL LIST' : null,
-                ].filter(Boolean).join(' · ')}
-              >
-                <Chip
-                  label={`${fmtPhone(d.number)}${d.dnc ? ' · DNC' : ''}`}
-                  size="small"
-                  onClick={() => setNumber(d.number)}
-                  variant={number === d.number ? 'filled' : 'outlined'}
-                  sx={number === d.number
-                    ? { bgcolor: d.dnc ? '#b3261e' : '#1565c0', color: '#fff', fontWeight: 700 }
-                    : d.dnc
-                      ? { borderColor: '#b3261e', color: '#b3261e', fontWeight: 700 }
-                      : undefined}
-                />
-              </Tooltip>
-            ))}
+            {state.dialable.map((d) => {
+              const last = lastAttemptOn(d.number);
+              return (
+                <Tooltip
+                  key={d.number}
+                  arrow
+                  title={[
+                    d.role === 'insured' ? 'The insured' : 'The co-insured',
+                    d.label === 'trace' ? 'found by a skip trace' : 'on the policy record',
+                    d.type ? d.type.toLowerCase() : null,
+                    d.rank != null ? `vendor rank ${d.rank}` : null,
+                    d.dnc ? 'ON THE DO-NOT-CALL LIST' : null,
+                    last
+                      ? `last tried ${easternDisplay(last.attemptedAt)} — ${CALL_OUTCOME_LABEL[last.outcome]}`
+                      : 'never dialled',
+                  ].filter(Boolean).join(' · ')}
+                >
+                  <Chip
+                    label={
+                      `${fmtPhone(d.number)}${d.dnc ? ' · DNC' : ''}`
+                      + (last ? ` · ${shortOutcome(last.outcome)} ${sinceLabel(last.attemptedAt)}` : '')
+                    }
+                    size="small"
+                    onClick={() => setNumber(d.number)}
+                    variant={number === d.number ? 'filled' : 'outlined'}
+                    sx={number === d.number
+                      ? { bgcolor: d.dnc ? '#b3261e' : '#1565c0', color: '#fff', fontWeight: 700 }
+                      : d.dnc
+                        ? { borderColor: '#b3261e', color: '#b3261e', fontWeight: 700 }
+                        : last
+                          // Tried already: muted, so an untried number is the one that
+                          // stands out. Not disabled — trying again is often the right move.
+                          ? { borderColor: '#c6ccd6', color: '#6b7280' }
+                          : { borderColor: '#1565c0', color: '#1565c0', fontWeight: 700 }}
+                  />
+                </Tooltip>
+              );
+            })}
           </Stack>
+          {state.dialable.every((d) => lastAttemptOn(d.number)) && state.dialable.length > 0 && (
+            <Typography variant="caption" sx={{ display: 'block', color: '#8a5a00', mb: 1.5 }}>
+              Every number on this card has been tried at least once. Nothing here is new —
+              check the dates before dialling again.
+            </Typography>
+          )}
           {state.dialable.some((d) => d.dnc) && (
             <Typography variant="caption" sx={{ display: 'block', color: '#b3261e', mb: 1.5 }}>
               {state.dialable.filter((d) => d.dnc).length} of these {state.dialable.length} numbers

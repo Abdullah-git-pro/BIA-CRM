@@ -109,13 +109,13 @@ export default function PhoneDashboardPage() {
   const exportCsv = () => {
     if (!data) return;
     const cols = ['cohort', 'propertyId', 'owner', 'address', 'renewal', 'premium',
-      'verifiedEmail', 'numbers', 'callableNumbers', 'dncNumbers', 'callStatus', 'attempts'];
+      'verifiedEmail', 'numbers', 'callableNumbers', 'dncNumbers', 'deadNumbers', 'callStatus', 'attempts'];
     const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const csv = [
       cols.map(esc).join(','),
       ...data.queue.map((q) => [
         q.cohortLabel, q.propertyId, q.owner, q.address, q.renewal, q.premium ?? '',
-        q.verified ? 'yes' : 'no', q.numbers, q.callable, q.dncNumbers,
+        q.verified ? 'yes' : 'no', q.numbers, q.callable, q.dncNumbers, q.deadNumbers,
         q.callStatusLabel, q.attempts,
       ].map(esc).join(',')),
     ].join('\r\n');
@@ -369,9 +369,19 @@ export default function PhoneDashboardPage() {
                     <TableCell sx={{ fontSize: 12 }}>{q.renewal}</TableCell>
                     <TableCell sx={{ fontSize: 12 }}>{q.premium ? `$${q.premium}` : '—'}</TableCell>
                     <TableCell>
-                      <Tooltip arrow title={q.dncNumbers
-                        ? `${q.dncNumbers} of ${q.numbers} are on the do-not-call list`
-                        : 'None flagged do-not-call'}>
+                      {/*
+                        Worth ringing, out of held — and the tooltip says what the gap is.
+
+                        The left-hand figure used to subtract only do-not-call numbers, so
+                        it still counted numbers Ruben had already logged as dead. Two C1
+                        cards showed live numbers with nothing dialable at all, and this
+                        column also orders the list, so those sorted to the top.
+                      */}
+                      <Tooltip arrow title={[
+                        `${q.callable} of ${q.numbers} worth ringing`,
+                        q.dncNumbers ? `${q.dncNumbers} on the do-not-call list` : null,
+                        q.deadNumbers ? `${q.deadNumbers} already logged as a bad number or wrong person` : null,
+                      ].filter(Boolean).join(' · ')}>
                         <span style={{ cursor: 'help', fontWeight: 700, color: q.callable ? undefined : '#b3261e' }}>
                           {q.callable}/{q.numbers}
                         </span>

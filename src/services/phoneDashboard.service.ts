@@ -1,6 +1,6 @@
 import { sql } from '@/lib/neon';
 import { insuredEmails } from './recipients.service';
-import { numbersOnCard } from './callLog.service';
+import { numbersOnCard, liveNumbersOnCard, invalidPhonesOf } from './callLog.service';
 import { deliverableAddresses } from './emailVerification.service';
 import { COHORT_LABEL } from './campaignSegment.service';
 import { CALL_STATUS_LABEL, isReachedStatus, type CallStatus } from '@/lib/callOutcomes';
@@ -50,6 +50,8 @@ export type PhoneQueueRow = {
   verified: boolean;
   hasAnyEmail: boolean;
   numbers: number;
+  /** Retired by a bad-number or wrong-person outcome. Not worth ringing again. */
+  deadNumbers: number;
   dncNumbers: number;
   callable: number;
   callStatus: CallStatus;
@@ -129,7 +131,20 @@ export async function getPhoneDashboard(f: PhoneFilters = {}): Promise<PhoneDash
     if (isVerified) { verifiedCount++; c.verified++; }
 
     const nums = numbersOnCard(l);
-    const callable = nums.filter((n) => !n.dnc).length;
+    /*
+     * Not do-not-call AND not already proven dead.
+     *
+     * This counted only the do-not-call flag, so a number Ruben had already logged as a
+     * bad number still counted as one he could ring. The queue is SORTED by this, "most
+     * live numbers first", so cards with nothing left to dial sorted to the top of his
+     * list — the opposite of what the ordering is for.
+     */
+    const live = liveNumbersOnCard(l);
+    const callable = live.length;
+    // Counted directly, not as a subtraction: a number can be BOTH flagged and dead, and
+    // nums - live - dnc would quietly count it twice and report a negative.
+    const dead = new Set(invalidPhonesOf(l));
+    const deadNumbers = nums.filter((n) => dead.has(n.number)).length;
     if (!nums.length) c.noNumbers++;
     if (!callable && !isVerified) unreachableAnyChannel++;
 
@@ -155,6 +170,7 @@ export async function getPhoneDashboard(f: PhoneFilters = {}): Promise<PhoneDash
       hasAnyEmail: addresses.length > 0,
       numbers: nums.length,
       dncNumbers: nums.filter((n) => n.dnc).length,
+      deadNumbers,
       callable,
       callStatus: status,
       callStatusLabel: CALL_STATUS_LABEL[status] ?? status,

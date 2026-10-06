@@ -147,8 +147,18 @@ export async function computeMetrics(
         indicative: false,
         // No reading is NOT a pass. §02 makes placement a gate on sending at all, so the
         // absence of a measurement is itself the thing to escalate.
+        /*
+         * The message names the step that is actually missing.
+         *
+         * It used to say "no seed tool has been agreed (register A27)". A27 closed on
+         * 6 Oct 2026 — the tool is chosen, connected and reading — so that sentence sent
+         * whoever saw it to settle a question that was already settled, while the real
+         * blocker went unnamed.
+         */
         needsAttention: value == null
-          ? 'No inbox-placement reading has ever been recorded. §02 makes this a gate on sending, and no seed tool has been agreed (register A27).'
+          ? 'No inbox-placement reading has been recorded yet. §02 makes this a gate on sending. '
+            + "The seed tool is connected; add each project's autotest address to a campaign "
+            + 'restricted to that domain’s mailboxes, then pull the readings.'
           : (ageDays != null && ageDays > 7 ? `Last reading is ${ageDays} days old; §08 requires a weekly minimum.` : null),
         note: spec.note,
       };
