@@ -1,5 +1,5 @@
 import { sql } from '@/lib/neon';
-import { insuredEmails } from './recipients.service';
+import { insuredEmails, coInsuredName } from './recipients.service';
 import { numbersOnCard, liveNumbersOnCard, invalidPhonesOf } from './callLog.service';
 import { deliverableAddresses } from './emailVerification.service';
 import { COHORT_LABEL } from './campaignSegment.service';
@@ -57,6 +57,17 @@ export type PhoneQueueRow = {
   callStatus: CallStatus;
   callStatusLabel: string;
   attempts: number;
+  /** Of those attempts, how many went to a co-insured number. */
+  coInsuredAttempts: number;
+  /** Whose number answered when contact was made. Null until reached. */
+  reachedVia: 'insured' | 'co_insured' | null;
+  /** The co-insured's name — who to ask for when one of their numbers answers. */
+  coInsuredName: string | null;
+  /** Numbers on the card belonging to the co-insured, and how many are worth ringing. */
+  coInsuredNumbers: number;
+  coInsuredLive: number;
+  /** Live numbers belonging to the insured. Zero means the co-insured is the only way in. */
+  insuredLive: number;
   lastAttemptAt: string | null;
 };
 
@@ -139,6 +150,7 @@ export async function getPhoneDashboard(f: PhoneFilters = {}): Promise<PhoneDash
      * live numbers first", so cards with nothing left to dial sorted to the top of his
      * list — the opposite of what the ordering is for.
      */
+    const coName = coInsuredName(l);
     const live = liveNumbersOnCard(l);
     const callable = live.length;
     // Counted directly, not as a subtraction: a number can be BOTH flagged and dead, and
@@ -175,6 +187,41 @@ export async function getPhoneDashboard(f: PhoneFilters = {}): Promise<PhoneDash
       callStatus: status,
       callStatusLabel: CALL_STATUS_LABEL[status] ?? status,
       attempts: call?.callAttempts ?? 0,
+      /*
+       * Who the calls went to, and whose number answered.
+       *
+       * Stored on every attempt since the call panel was built and read by nothing, so
+       * 65 calls to a co-insured were reported as though they had been to the insured.
+       * It matters twice on this screen: Ruben needs to know he will be asking for
+       * somebody else by name, and 3 of the 11 households reached so far answered on a
+       * co-insured number — the only evidence that carrying them is worth the credits.
+       */
+      coInsuredAttempts: coName ? (call?.callCoInsuredTries ?? 0) : 0,
+      /*
+       * The stored role is history, and on a few cards the history is wrong.
+       *
+       * Every attempt records whose number was dialled, but until today owner2Phone was
+       * taken for a co-insured even on the 11 cards where the owner2 columns hold a copy
+       * of the insured's own name. Angela Matera answering her own third number was
+       * logged as a co-insured pickup, and she was 1 of the 3 that make the case for
+       * ringing them at all.
+       *
+       * Corrected here rather than by editing CallAttempt: the row is a true record of
+       * what Ruben dialled. What was wrong is the label we printed beside the number,
+       * and a card with no second person on it cannot have been reached through one.
+       */
+      reachedVia: coName ? (call?.reachedVia ?? null) : null,
+      /*
+       * The co-insured side of the card, broken out for its own table.
+       *
+       * "7 worth ringing" tells Ruben nothing about who answers. Two of those seven can
+       * be the co-insured's, which is a different person to ask for — and on some cards
+       * every live number is theirs, so the insured is not reachable by phone at all.
+       */
+      coInsuredName: coName,
+      coInsuredNumbers: nums.filter((n) => n.role === 'co_insured').length,
+      coInsuredLive: live.filter((n) => n.role === 'co_insured').length,
+      insuredLive: live.filter((n) => n.role === 'insured').length,
       lastAttemptAt: null,
     });
   }
@@ -195,6 +242,7 @@ export async function getPhoneDashboard(f: PhoneFilters = {}): Promise<PhoneDash
   const nonVerified = rated - verifiedCount;
   const called = queue.filter((q) => q.attempts > 0).length;
   const reached = queue.filter((q) => isReachedStatus(q.callStatus)).length;
+  const reachedViaCoInsured = queue.filter((q) => q.reachedVia === 'co_insured').length;
   const quoting = queue.filter((q) => q.callStatus === 'quoting').length;
 
   return {
@@ -214,7 +262,10 @@ export async function getPhoneDashboard(f: PhoneFilters = {}): Promise<PhoneDash
       { key: 'called', label: 'Called at least once', count: called, of: 'to_call' },
       {
         key: 'reached', label: 'Reached a person', count: reached, of: 'called',
-        note: 'Actually spoke to someone — not merely dialled.',
+        note: 'Actually spoke to someone — not merely dialled.'
+          + (reachedViaCoInsured
+            ? ` ${reachedViaCoInsured} of them answered on a co-insured's number, not the insured's.`
+            : ''),
       },
       { key: 'quoting', label: 'Quoting', count: quoting, of: 'reached' },
     ],

@@ -109,7 +109,9 @@ export default function PhoneDashboardPage() {
   const exportCsv = () => {
     if (!data) return;
     const cols = ['cohort', 'propertyId', 'owner', 'address', 'renewal', 'premium',
-      'verifiedEmail', 'numbers', 'callableNumbers', 'dncNumbers', 'deadNumbers', 'callStatus', 'attempts'];
+      'verifiedEmail', 'numbers', 'callableNumbers', 'dncNumbers', 'deadNumbers', 'callStatus',
+      'attempts', 'attemptsToCoInsured', 'reachedVia',
+      'coInsuredName', 'coInsuredNumbers', 'coInsuredLive', 'insuredLive'];
     const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const csv = [
       cols.map(esc).join(','),
@@ -379,11 +381,23 @@ export default function PhoneDashboardPage() {
                       */}
                       <Tooltip arrow title={[
                         `${q.callable} of ${q.numbers} worth ringing`,
+                        // Whose they are. "7 worth ringing" reads as seven ways to reach
+                        // the homeowner; on 66 accounts every one of them is the
+                        // co-insured's and the insured cannot be rung at all.
+                        q.coInsuredLive
+                          ? `${q.insuredLive} the insured's, ${q.coInsuredLive} the co-insured's`
+                            + (q.coInsuredName ? ` (${q.coInsuredName})` : '')
+                          : null,
                         q.dncNumbers ? `${q.dncNumbers} on the do-not-call list` : null,
                         q.deadNumbers ? `${q.deadNumbers} already logged as a bad number or wrong person` : null,
                       ].filter(Boolean).join(' · ')}>
                         <span style={{ cursor: 'help', fontWeight: 700, color: q.callable ? undefined : '#b3261e' }}>
                           {q.callable}/{q.numbers}
+                          {q.coInsuredLive > 0 && (
+                            <span style={{ color: '#6b4e00', fontWeight: 400, fontSize: 11 }}>
+                              {' '}({q.insuredLive === 0 ? 'all co' : `${q.coInsuredLive} co`})
+                            </span>
+                          )}
                         </span>
                       </Tooltip>
                     </TableCell>
@@ -397,7 +411,31 @@ export default function PhoneDashboardPage() {
                                 : '#eef1f5',
                         }} />
                     </TableCell>
-                    <TableCell align="right" sx={{ fontSize: 12 }}>{q.attempts || '—'}</TableCell>
+                    {/*
+                      Attempts, and how many were to somebody other than the insured.
+
+                      "5 attempts" reads as five calls to the homeowner. On Allyssa
+                      Townsend one of them was to the co-insured, which is a different
+                      conversation and a different person to ask for. The split was
+                      recorded on every attempt and shown nowhere.
+                    */}
+                    <TableCell align="right" sx={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+                      <Tooltip arrow title={[
+                        `${q.attempts} attempt${q.attempts === 1 ? '' : 's'}`,
+                        q.coInsuredAttempts ? `${q.coInsuredAttempts} to the co-insured` : null,
+                        q.reachedVia ? `reached on the ${q.reachedVia === 'co_insured' ? 'co-insured' : 'insured'}'s number` : null,
+                      ].filter(Boolean).join(' · ')}>
+                        <span style={{ cursor: q.attempts ? 'help' : 'default' }}>
+                          {q.attempts || '—'}
+                          {q.coInsuredAttempts > 0 && (
+                            <span style={{ color: '#6b4e00', fontSize: 11 }}> · {q.coInsuredAttempts} co</span>
+                          )}
+                          {q.reachedVia === 'co_insured' && (
+                            <span style={{ color: '#166534', fontSize: 11, fontWeight: 700 }}> ✓co</span>
+                          )}
+                        </span>
+                      </Tooltip>
+                    </TableCell>
                   </TableRow>
                 ))}
                 {!data.queue.length && (
@@ -416,6 +454,126 @@ export default function PhoneDashboardPage() {
               </Typography>
             )}
           </Paper>
+
+          {/*
+            ── The co-insured, on its own (Frank, 7 Oct 2026) ──────────────────
+
+            Mixed into the main list this is invisible: a card reading "7 worth ringing"
+            says nothing about whose numbers they are, and 66 accounts have NO live
+            number for the insured at all — the co-insured is the only way in and the
+            list gave no sign of it.
+
+            Ordered by what is owed rather than by name: the accounts reachable only
+            through the co-insured come first, never-called before called, then most
+            numbers. That is the same logic as the main list, applied to this question.
+          */}
+          {(() => {
+            /*
+             * Everyone with a second person on the policy we have actually worked —
+             * not only those who still have a number on the card.
+             *
+             * Filtering on coInsuredNumbers alone dropped 5 cards where the co-insured
+             * WAS rung and the number was then retired as dead or a wrong person. Those
+             * are 5 real calls Ruben made, and leaving them out both understated the
+             * work and hid the answer: we tried her, that line is no good.
+             */
+            const withCo = data.queue.filter((q) => q.coInsuredName && (q.coInsuredNumbers > 0 || q.coInsuredAttempts > 0));
+            if (!withCo.length) return null;
+            const onlyCo = withCo.filter((q) => q.insuredLive === 0 && q.coInsuredLive > 0);
+            const calls = withCo.reduce((a, q) => a + q.coInsuredAttempts, 0);
+            // Every figure in the strip describes the rows underneath it, so this counts
+            // the same population the table lists rather than the whole queue.
+            const reached = withCo.filter((q) => q.reachedVia === 'co_insured').length;
+            const rows = [...withCo].sort((a, b) =>
+              Number(b.insuredLive === 0) - Number(a.insuredLive === 0)
+              || Number(a.coInsuredAttempts > 0) - Number(b.coInsuredAttempts > 0)
+              || b.coInsuredLive - a.coInsuredLive);
+
+            return (
+              <Paper variant="outlined" sx={{ p: 2, mt: 2 }}>
+                <Typography sx={{ fontWeight: 700, fontSize: 15, mb: 0.25 }}>
+                  The co-insured
+                </Typography>
+                <Typography variant="caption" sx={{ color: '#5a6675', display: 'block', mb: 1.5 }}>
+                  The spouse or co-owner on the policy. Their numbers are on the card and are
+                  rung like any other — this is the same work, counted separately so it can be
+                  judged on its own.
+                </Typography>
+
+                <Stack direction="row" spacing={2} sx={{ mb: 2, flexWrap: 'wrap' }} useFlexGap>
+                  {[
+                    { label: 'Accounts with a co-insured number', value: withCo.length },
+                    { label: 'Where they are the only way in', value: onlyCo.length, warn: true },
+                    { label: 'Calls made to a co-insured', value: calls },
+                    { label: 'Households reached that way', value: reached, good: true },
+                  ].map((s) => (
+                    <Box key={s.label} sx={{
+                      px: 1.75, py: 1, borderRadius: 1, minWidth: 150,
+                      border: '1px solid', borderColor: s.warn ? '#e0b84c' : s.good ? '#9bd4b0' : '#e0e4ea',
+                      bgcolor: s.warn ? '#fdf7e7' : s.good ? '#f2faf5' : '#fff',
+                    }}>
+                      <Typography sx={{ fontSize: 22, fontWeight: 700, lineHeight: 1.1 }}>{s.value}</Typography>
+                      <Typography sx={{ fontSize: 11, color: '#5a6675' }}>{s.label}</Typography>
+                    </Box>
+                  ))}
+                </Stack>
+
+                <Box sx={scrollableTable}>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        {['Week', 'Insured', 'Co-insured', 'Their numbers', 'Insured numbers',
+                          'Calls to them', 'Reached', 'Status'].map((h) => (
+                          <TableCell key={h} sx={{ fontWeight: 700, fontSize: 12, whiteSpace: 'nowrap' }}>{h}</TableCell>
+                        ))}
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {rows.slice(0, 300).map((q) => (
+                        <TableRow key={q.propertyId} hover>
+                          <TableCell sx={{ fontSize: 12 }}>{q.cohortLabel}</TableCell>
+                          <TableCell sx={{ fontSize: 12 }}>
+                            <Link href={`/leads/${q.propertyId}?from=phone`} style={{ color: '#1565c0', textDecoration: 'none' }}>
+                              {q.owner}
+                            </Link>
+                          </TableCell>
+                          <TableCell sx={{ fontSize: 12, fontWeight: 600 }}>{q.coInsuredName ?? '—'}</TableCell>
+                          <TableCell sx={{ fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
+                            {q.coInsuredNumbers === 0
+                              ? <span style={{ color: '#8a8f98' }} title="Every number we had for them has been retired as dead or a wrong person.">all dead</span>
+                              : <>{q.coInsuredLive}/{q.coInsuredNumbers}</>}
+                          </TableCell>
+                          {/* Zero here is the point of the table: nobody else to ring. */}
+                          <TableCell sx={{
+                            fontSize: 12, fontVariantNumeric: 'tabular-nums',
+                            color: q.insuredLive === 0 ? '#b3261e' : undefined,
+                            fontWeight: q.insuredLive === 0 ? 700 : undefined,
+                          }}>
+                            {q.insuredLive === 0 ? 'none' : q.insuredLive}
+                          </TableCell>
+                          <TableCell sx={{ fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
+                            {q.coInsuredAttempts || '—'}
+                          </TableCell>
+                          <TableCell>
+                            {q.reachedVia === 'co_insured' && (
+                              <Chip label="on their number" size="small"
+                                sx={{ height: 19, fontSize: 11, fontWeight: 700, bgcolor: '#e7f5ec', color: '#166534' }} />
+                            )}
+                          </TableCell>
+                          <TableCell sx={{ fontSize: 12 }}>{q.callStatusLabel}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </Box>
+                {rows.length > 300 && (
+                  <Typography variant="caption" sx={{ color: '#5a6675', mt: 1, display: 'block' }}>
+                    Showing the first 300 of {rows.length}. Export for the rest.
+                  </Typography>
+                )}
+              </Paper>
+            );
+          })()}
         </>
       )}
       {!loading && !data && !error && <CircularProgress />}

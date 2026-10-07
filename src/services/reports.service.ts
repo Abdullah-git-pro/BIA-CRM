@@ -116,6 +116,12 @@ export interface QcRow {
    */
   callStatus?: CallStatus;
   callAttempts?: number;
+  /** Attempts to the insured's own numbers. */
+  callInsuredTries?: number;
+  /** Attempts to the co-insured's numbers — 57 of the 269 calls on the book. */
+  callCoInsuredTries?: number;
+  /** Whose number was answered when somebody was finally reached. Null until reached. */
+  reachedVia?: 'insured' | 'co_insured' | null;
   /** Distinct DAYS dialled — half of Frank's Sec. 10.5 stop rule, and not the same as attempts. */
   callDays?: number;
   callLastOutcome?: string | null;
@@ -609,6 +615,23 @@ export async function getQcReport(type: QcReportType, params: QcReportParams = {
                -- it; this report used to apply only the attempts and days conditions and
                -- could therefore retire a lead the card still considered live.
                COUNT(DISTINCT "numberDialled")::int                      AS numbers_tried,
+               /*
+                * Who each call was actually to.
+                *
+                * Every attempt has carried numberRole since the call panel was built, and
+                * no report had ever read it — 57 of the 269 calls on the book are to a
+                * co-insured and every one of them was reported as if it were the insured.
+                * Frank asked for co-insured calls to be tracked; they were, invisibly.
+                *
+                * reached_via is the one that answers the question worth asking: when we
+                * finally get hold of a household, whose number did it? That is the only
+                * evidence of whether carrying co-insured numbers is worth the credits.
+                */
+               COUNT(*) FILTER (WHERE "numberRole" = 'co_insured')::int  AS co_tries,
+               COUNT(*) FILTER (WHERE "numberRole" = 'insured')::int     AS insured_tries,
+               (ARRAY_AGG("numberRole" ORDER BY "attemptedAt" DESC)
+                  FILTER (WHERE "outcome" IN ('callback_scheduled','quote_requested',
+                                              'not_interested','do_not_call')))[1] AS reached_via,
                MAX("attemptedAt")                                       AS last_at,
                BOOL_OR("outcome" IN ('callback_scheduled','quote_requested',
                                      'not_interested','do_not_call'))   AS reached,
@@ -659,6 +682,9 @@ export async function getQcReport(type: QcReportType, params: QcReportParams = {
              COALESCE(a.tries, 0)  AS call_tries,
              a.days                AS call_days,
              a.numbers_tried       AS call_numbers_tried,
+             a.co_tries            AS call_co_tries,
+             a.insured_tries       AS call_insured_tries,
+             a.reached_via         AS call_reached_via,
              a.last_at             AS call_last_at,
              a.reached             AS call_reached,
              a.last_outcome        AS call_last_outcome,
@@ -845,6 +871,16 @@ export async function getQcReport(type: QcReportType, params: QcReportParams = {
           callStatus,
           callAttempts: tries,
           callDays: days,
+          /*
+           * Split by who was rung, and by whose number finally answered.
+           *
+           * Recorded on every attempt since the call panel was built, and read by nothing
+           * until now — so every call to a co-insured was reported as though it had been
+           * to the insured.
+           */
+          callInsuredTries: Number(r.call_insured_tries ?? 0),
+          callCoInsuredTries: Number(r.call_co_tries ?? 0),
+          reachedVia: (r.call_reached_via as 'insured' | 'co_insured') ?? null,
           callLastOutcome: (r.call_last_outcome as string) ?? null,
           quoteStage,
           quotedPremium: r.quotedPremium == null ? null : Number(r.quotedPremium),

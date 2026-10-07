@@ -120,14 +120,29 @@ export function numberMetaFor(lead: Record<string, unknown>): Map<string, Number
   return out;
 }
 
+/** "Jane Cagney", or null when that person has no name on the card. */
+const personName = (first: unknown, last: unknown): string | null =>
+  [String(first ?? '').trim(), String(last ?? '').trim()].filter(Boolean).join(' ') || null;
+
 export function numbersOnCard(lead: Record<string, unknown>): Array<{
   number: string; role: 'insured' | 'co_insured'; label: string;
   dnc: boolean; tcpa: boolean; rank: number | null; type: string | null;
+  /**
+   * Whose number this is, by name.
+   *
+   * The role alone says "co-insured", which is a category. On a call what Ruben needs is
+   * a name to ask for — dialling the co-insured's mobile and opening with the insured's
+   * name is how a good number gets wasted. 698 of 998 Grade A cards carry a co-insured
+   * number and 40 of them have no insured number at all, so this is the only person
+   * reachable on those.
+   */
+  person: string | null;
 }> {
   const meta = numberMetaFor(lead);
   const out: Array<{
     number: string; role: 'insured' | 'co_insured'; label: string;
     dnc: boolean; tcpa: boolean; rank: number | null; type: string | null;
+    person: string | null;
   }> = [];
   const seen = new Set<string>();
   const add = (n: string, role: 'insured' | 'co_insured', label: string) => {
@@ -141,6 +156,9 @@ export function numbersOnCard(lead: Record<string, unknown>): Array<{
       tcpa: m?.tcpa ?? false,
       rank: m?.rank ?? null,
       type: m?.type ?? null,
+      person: role === 'insured'
+        ? personName(lead.owner1FirstName, lead.owner1LastName)
+        : personName(lead.owner2FirstName, lead.owner2LastName),
     });
   };
   for (const n of insuredPhones(lead)) {

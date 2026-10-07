@@ -40,6 +40,8 @@ type State = {
     number: string; role: 'insured' | 'co_insured'; label: string;
     /** From the skip-trace payload. 48% of C1–C3 numbers are DNC-flagged. */
     dnc?: boolean; tcpa?: boolean; rank?: number | null; type?: string | null;
+    /** Whose number it is, by name — who to ask for when it answers. */
+    person?: string | null;
   }>;
   blockedReason: string | null;
 };
@@ -469,8 +471,33 @@ export default function CallDispositionPanel({ leadId }: { leadId: string }) {
             decisions, and the difference is what stops a number being redialled twice
             in an afternoon.
           */}
-          <Stack direction="row" spacing={0.75} sx={{ mb: 1.5, flexWrap: 'wrap' }} useFlexGap>
-            {state.dialable.map((d) => {
+          {/*
+            ── Grouped by whose number it is (Frank, 7 Oct 2026) ───────────────
+
+            Co-insured numbers were always offered here — 698 of 998 Grade A cards carry
+            one, 40 of them have no insured number at all, and 57 calls have already been
+            logged against them. None of that was visible: the role appeared only in a
+            hover tooltip, so the card looked as though it listed the insured's numbers
+            and nothing else.
+
+            Grouped under a heading with the person's NAME rather than tagged on each
+            chip, because the name is the operative fact on a call. Dialling the
+            co-insured's mobile and opening with the insured's name wastes a good number.
+          */}
+          {(['insured', 'co_insured'] as const)
+            .filter((role) => state.dialable.some((d) => d.role === role))
+            .map((role) => {
+              const group = state.dialable.filter((d) => d.role === role);
+              const who = group.find((d) => d.person)?.person ?? null;
+              return (
+                <Box key={role} sx={{ mb: 1.25 }}>
+                  <Typography variant="caption" sx={{ display: 'block', color: '#5a6675', mb: 0.4 }}>
+                    {role === 'insured' ? 'Insured' : 'Co-insured'}
+                    {who ? <> — <Box component="span" sx={{ fontWeight: 700 }}>{who}</Box></> : null}
+                    {role === 'co_insured' ? ' · ask for them by name' : null}
+                  </Typography>
+                  <Stack direction="row" spacing={0.75} sx={{ flexWrap: 'wrap' }} useFlexGap>
+                    {group.map((d) => {
               const last = lastAttemptOn(d.number);
               return (
                 <Tooltip
@@ -507,8 +534,11 @@ export default function CallDispositionPanel({ leadId }: { leadId: string }) {
                   />
                 </Tooltip>
               );
+                    })}
+                  </Stack>
+                </Box>
+              );
             })}
-          </Stack>
           {state.dialable.every((d) => lastAttemptOn(d.number)) && state.dialable.length > 0 && (
             <Typography variant="caption" sx={{ display: 'block', color: '#8a5a00', mb: 1.5 }}>
               Every number on this card has been tried at least once. Nothing here is new —
@@ -749,6 +779,17 @@ export default function CallDispositionPanel({ leadId }: { leadId: string }) {
                 <Typography variant="caption" sx={{ fontFamily: 'monospace' }}>
                   {fmtPhone(a.numberDialled)}
                 </Typography>
+                {/*
+                  Whose number was rung, on the row that records it.
+                  The role has been stored on every attempt all along — 57 of the 269
+                  calls on the book are to a co-insured — and the log never showed it, so
+                  the history read as though every call had been to the insured.
+                */}
+                {a.numberRole === 'co_insured' && (
+                  <Typography variant="caption" sx={{ color: '#6b4e00', fontWeight: 600 }}>
+                    co-insured
+                  </Typography>
+                )}
                 <Typography variant="caption" sx={{
                   fontWeight: 700,
                   color: spec?.tone === 'good' ? '#166534' : spec?.tone === 'bad' ? '#b3261e' : '#5a6675',

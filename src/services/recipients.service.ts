@@ -114,12 +114,65 @@ function coInsuredNamedInHousehold(lead: LeadLike): string[] {
 }
 
 /** Every address belonging to the co-insured, before the insured's are removed. */
+/**
+ * The co-insured's own addresses inside the RELATIVES blocks.
+ *
+ * The email twin of coInsuredRelativePhones, and the same gap: tracedPersons() never
+ * descends into `relatives`, so a co-insured the vendor filed there was invisible.
+ * Measured across Grade A from C1 onward, 407 of the cards with a named co-insured were
+ * holding 712 addresses that way.
+ *
+ * The guard is identity, exactly as it is for phones — BOTH names must equal the
+ * co-insured already on the card — and the insured's own addresses are never taken,
+ * because insuredEmails() is built by excluding this pool and a shared household address
+ * must not be removed from the person the campaign actually writes to.
+ *
+ * This is ADDITIVE: it can only give the co-insured addresses nobody else claimed. It
+ * does not change who is mailed on email 1, which goes to the named insured only.
+ */
+function coInsuredRelativeEmails(lead: LeadLike): string[] {
+  const first = String(lead?.owner2FirstName ?? '').toLowerCase().replace(/[^a-z]/g, '');
+  const last = String(lead?.owner2LastName ?? '').toLowerCase().replace(/[^a-z]/g, '');
+  if (!first || !last) return [];
+
+  const iFirst = String(lead?.owner1FirstName ?? '').toLowerCase().replace(/[^a-z]/g, '');
+  const iLast = String(lead?.owner1LastName ?? '').toLowerCase().replace(/[^a-z]/g, '');
+  if (first === iFirst && last === iLast) return [];
+
+  const out: unknown[] = [];
+  for (const r of tracedRelatives(lead)) {
+    if (!relativeIs(r, first, last)) continue;
+    for (const em of (Array.isArray(r.emails) ? r.emails : []) as Array<Record<string, unknown> | string>) {
+      out.push(typeof em === 'string' ? em : em?.email);
+    }
+  }
+
+  // Never take an address the insured holds: the columns are what the campaign mails.
+  const insuredOwn = new Set(cleanEmails([
+    lead?.email1,
+    lead?.email2,
+    ...(matchInsuredPerson(tracedPersons(lead), lead)?.emails ?? []),
+  ]));
+  return cleanEmails(out).filter((e) => !insuredOwn.has(e));
+}
+
 function coInsuredEmailPool(lead: LeadLike): string[] {
+  /*
+   * Same guard, and it matters more here than on the phone side.
+   *
+   * insuredEmails() is built by EXCLUDING this pool, so an owner2Email taken for a
+   * co-insured who does not exist is not merely mislabelled — it is removed from the
+   * insured. Seven addresses from C1 onward were held only in that column, so the
+   * campaign had nothing to write to on those cards and they read as unreachable.
+   */
+  if (!hasDistinctCoInsured(lead)) return [];
+
   const co = matchCoInsuredPerson(tracedPersons(lead), lead);
   return cleanEmails([
     lead?.owner2Email,
     ...(co?.emails ?? []),
     ...coInsuredNamedInHousehold(lead),
+    ...coInsuredRelativeEmails(lead),
   ]);
 }
 
@@ -191,9 +244,125 @@ function cleanPhones(values: unknown[], exclude: Set<string> = new Set()): strin
 }
 
 /** Every number belonging to the co-insured, before the insured's are removed. */
+/**
+ * The co-insured's own records inside the RELATIVES blocks.
+ *
+ * ── Why this is needed ──────────────────────────────────────────────────────
+ * tracedPersons() reads `persons` and `priorPersons` and never descends into
+ * `relatives`, so a co-insured the vendor happened to file as a relative of the insured
+ * was invisible to the matcher. Measured across Grade A from C1 onward: 245 of the 760
+ * cards with a named co-insured were in that state, hiding 813 phone numbers we had
+ * already paid for. Alpesh Patel's card showed 8 numbers and held 5 more for Bhavika
+ * Patel, the named co-insured, sitting in the relatives list.
+ *
+ * ── Why this is NOT the contamination bug coming back ───────────────────────
+ * On 5 Oct the co-insured slot was filling with whoever the trace happened to return —
+ * Tracerfy handed back a "relative" called Ashraf Waqas, the insured's own name
+ * reversed, and his email landed against the co-insured's name. The guard against that
+ * is identity, not location: BOTH names must equal the co-insured already on the card.
+ * This applies exactly that test, so a relative who is not the co-insured is still
+ * ignored. It widens where we look, not who counts.
+ *
+ * Deliberately separate from tracedPersons(): widening that would let
+ * matchInsuredPerson search relatives too, which is precisely how the 5 Oct fault
+ * happened.
+ */
+type TracedRelative = Record<string, unknown>;
+
+/**
+ * Every relative record the trace filed under any traced person.
+ *
+ * Deliberately NOT folded into tracedPersons(): widening that would let
+ * matchInsuredPerson search relatives too, which is exactly how the 5 Oct contamination
+ * happened — a "relative" called Ashraf Waqas, the insured's own name reversed, matched
+ * as the insured. This is read only by the two co-insured helpers below, and both
+ * require an exact match on BOTH names before taking anything.
+ */
+function tracedRelatives(lead: LeadLike): TracedRelative[] {
+  const data = lead?.skipTraceData as { persons?: unknown } | undefined;
+  const persons = Array.isArray(data?.persons) ? data.persons : [];
+  const out: TracedRelative[] = [];
+  for (const p of persons as Array<Record<string, unknown>>) {
+    for (const r of (Array.isArray(p?.relatives) ? p.relatives : []) as TracedRelative[]) out.push(r);
+  }
+  return out;
+}
+
+/** Is this relative record the person named in the co-insured slot? Both names, exactly. */
+function relativeIs(r: TracedRelative, first: string, last: string): boolean {
+  const key = (v: unknown) => String(v ?? '').toLowerCase().replace(/[^a-z]/g, '');
+  return key(r.first_name ?? r.firstName) === first && key(r.last_name ?? r.lastName) === last;
+}
+
+function coInsuredRelativePhones(lead: LeadLike): string[] {
+  const first = String(lead?.owner2FirstName ?? '').toLowerCase().replace(/[^a-z]/g, '');
+  const last = String(lead?.owner2LastName ?? '').toLowerCase().replace(/[^a-z]/g, '');
+  if (!first || !last) return [];
+
+  // A co-insured slot holding the insured's own name is not a second person.
+  const iFirst = String(lead?.owner1FirstName ?? '').toLowerCase().replace(/[^a-z]/g, '');
+  const iLast = String(lead?.owner1LastName ?? '').toLowerCase().replace(/[^a-z]/g, '');
+  if (first === iFirst && last === iLast) return [];
+
+  const out: unknown[] = [];
+  for (const r of tracedRelatives(lead)) {
+    if (!relativeIs(r, first, last)) continue;
+    for (const ph of (Array.isArray(r.phones) ? r.phones : []) as Array<Record<string, unknown> | string>) {
+      out.push(typeof ph === 'string' ? ph : ph?.number ?? ph?.phone);
+    }
+  }
+
+  /**
+   * Never take a number the insured already owns.
+   *
+   * insuredPhones() is built by EXCLUDING the co-insured pool, so anything added here is
+   * removed from the insured. Without this guard the first version of this function took
+   * Alpesh Patel's phone1 — the number that came with the policy — and relabelled it as
+   * Bhavika Patel's, because the vendor lists shared household numbers under both people.
+   * Two of his eight numbers moved that way.
+   *
+   * The insured's claim is the stronger one: phone1 and phone2 are on the policy, and the
+   * matched insured person is a direct attribution rather than a relative entry. A number
+   * shared by a household should be offered as the insured's, with the co-insured's own
+   * numbers added beside it — not swapped.
+   */
+  const insuredOwn = new Set(cleanPhones([
+    lead?.phone1,
+    lead?.phone2,
+    ...(matchInsuredPerson(tracedPersons(lead), lead)?.phones ?? []),
+  ]));
+  return cleanPhones(out).filter((p) => !insuredOwn.has(p));
+}
+
 function coInsuredPhonePool(lead: LeadLike): string[] {
+  // No second person, no pool. Without this, owner2Phone was tagged as a co-insured's
+  // number on 9 cards where owner2 is the insured herself — and one of the three
+  // "reached on a co-insured's number" was Angela Matera answering her own phone.
+  if (!hasDistinctCoInsured(lead)) return [];
+
   const co = matchCoInsuredPerson(tracedPersons(lead), lead);
-  return cleanPhones([lead?.owner2Phone, ...(co?.phones ?? [])]);
+  const pool = cleanPhones([
+    lead?.owner2Phone,
+    ...(co?.phones ?? []),
+    ...coInsuredRelativePhones(lead),
+  ]);
+
+  /**
+   * A number on the POLICY stays the insured's, whoever else also lists it.
+   *
+   * insuredPhones() is built by excluding this pool, so anything in here is taken away
+   * from the insured. Across Grade A from C1 onward that moved 119 policy numbers onto
+   * the co-insured, and 113 of them for the same mundane reason: one household line
+   * recorded in both phone1/phone2 AND owner2Phone. Yefim Shvarts' card showed both of
+   * his policy numbers as his wife's.
+   *
+   * phone1 and phone2 arrive with the policy, in the named insured's name. That is the
+   * strongest attribution in the record and it is not a tie to be broken — so the
+   * columns win, and the co-insured keeps every number that is genuinely only theirs.
+   * No number leaves the card either way; only the name beside it changes.
+   */
+  const policyNumbers = new Set(cleanPhones([lead?.phone1, lead?.phone2]));
+  return pool.filter((p) => !policyNumbers.has(p));
 }
 
 export function insuredPhones(lead: LeadLike): string[] {
@@ -206,6 +375,22 @@ export function insuredPhones(lead: LeadLike): string[] {
 export function coInsuredPhones(lead: LeadLike): string[] {
   const insured = new Set(insuredPhones(lead));
   return coInsuredPhonePool(lead).filter((p) => !insured.has(p));
+}
+
+/**
+ * Is there a second person on this policy at all?
+ *
+ * The owner2 columns are not evidence of one. On 11 Grade A cards from C1 onward they
+ * hold a verbatim copy of the insured's own name — "Angela Matera", co-insured "Angela
+ * Matera" — and on those cards owner2Phone and owner2Email are simply a third number
+ * and a third address belonging to the insured.
+ *
+ * Every other co-insured rule already checked this (matchCoInsuredPerson, the relatives
+ * lookups, the household-address match). The two POOLS did not, because they read the
+ * owner2 columns directly before any of those ran. One rule, one place.
+ */
+function hasDistinctCoInsured(lead: LeadLike): boolean {
+  return coInsuredName(lead) !== null;
 }
 
 /**
