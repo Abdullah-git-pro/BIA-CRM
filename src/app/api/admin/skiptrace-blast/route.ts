@@ -285,7 +285,7 @@ function pipelineScratch(): BlastResult {
   return {
     heldFromFrozenCohort: 0, vendor: 'tracerfy', dryRun: false, pool: 0, attempted: 0,
     matched: 0, recovered: 0, phoneOnly: 0, movedOn: 0, regraded: 0,
-    skippedAlreadyTraced: 0, entityOwned: 0, errors: [],
+    skippedAlreadyTraced: 0, entityOwned: 0, noName: 0, errors: [],
   };
 }
 

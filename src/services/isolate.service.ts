@@ -33,19 +33,30 @@ import { insuredEmails } from './recipients.service';
  * look. Somebody presses the button; it is recorded; it can be undone.
  */
 
-const GRADE_A = (l: any) => String(l.manualGrade || l.grade || '') === 'A';
+const gradeOf = (l: any) => String(l.manualGrade || l.grade || '');
 
 /**
- * Grade A, no insured email, not already isolated.
+ * The grade being isolated. Defaults to A, which is all this ever did.
  *
- * Both tests key on isolatedAt, not on status. The legacy check is kept alongside it only
- * so the 46 leads isolated under the old rule are still recognised before the backfill
- * runs — after it, the status arm never matches anything.
+ * ── Why it is a parameter now ────────────────────────────────────────────────
+ * It was hard-coded to Grade A, and the recovery pipeline grew a Grade B tab with its own
+ * "Isolate 102" button pointing at the same endpoint. Clicking it isolated the Grade A
+ * leads in range — of which there were none — so it reported success, changed nothing,
+ * and gave no clue why. The button was offered on a tab the service could not serve.
+ */
+export type IsolateGrade = 'A' | 'B';
+
+/**
+ * No insured email, not already isolated, in the grade being worked.
+ *
+ * Both isolation tests key on isolatedAt, not on status. The legacy check is kept
+ * alongside it only so the 46 leads isolated under the old rule are still recognised
+ * before the backfill runs — after it, the status arm never matches anything.
  */
 const isIsolated = (l: any) => l.isolatedAt != null || l.status === 'isolated';
 
-function isTarget(l: any): boolean {
-  return GRADE_A(l) && insuredEmails(l).length === 0 && !isIsolated(l);
+function isTarget(l: any, grade: IsolateGrade): boolean {
+  return gradeOf(l) === grade && insuredEmails(l).length === 0 && !isIsolated(l);
 }
 
 /** An isolated lead that can now be reached — isolation no longer applies. */
@@ -79,7 +90,9 @@ async function scoped(effFrom?: string, effTo?: string): Promise<any[]> {
 
 export type IsolateResult = {
   dryRun: boolean;
-  /** Grade A, no insured email, not yet isolated. */
+  /** The grade that was isolated. */
+  grade: IsolateGrade;
+  /** In that grade: no insured email, not yet isolated. */
   candidates: number;
   isolated: number;
   /** Already isolated and now reachable — put back where they were. */
@@ -93,11 +106,13 @@ export async function isolateUnreachable(opts: {
   effTo?: string;
   dryRun?: boolean;
   createdBy?: string | null;
+  /** Which grade to isolate. Defaults to A — the only one this used to handle. */
+  grade?: IsolateGrade;
 } = {}): Promise<IsolateResult> {
-  const { effFrom, effTo, dryRun = true, createdBy = null } = opts;
+  const { effFrom, effTo, dryRun = true, createdBy = null, grade = 'A' } = opts;
 
   const rows = await scoped(effFrom, effTo);
-  const targets = rows.filter(isTarget);
+  const targets = rows.filter((l) => isTarget(l, grade));
   const restorable = rows.filter(isRestorable);
 
   const fromStatus: Record<string, number> = {};
@@ -108,6 +123,7 @@ export async function isolateUnreachable(opts: {
 
   const out: IsolateResult = {
     dryRun,
+    grade,
     candidates: targets.length,
     isolated: 0,
     restored: restorable.length,
@@ -122,7 +138,7 @@ export async function isolateUnreachable(opts: {
       // lead stays rated while it waits for an address.
       isolatedAt: now,
       isolatedFromStatus: l.status ?? null,
-      isolatedReason: 'Grade A with no insured email — cannot be emailed',
+      isolatedReason: `Grade ${grade} with no insured email — cannot be emailed`,
       /**
        * Enrol at the stage that reflects what has ALREADY been tried.
        *
@@ -143,7 +159,7 @@ export async function isolateUnreachable(opts: {
     await addActivity(
       l.id,
       'status_change',
-      `Isolated — Grade A, no insured email. Status stays ${l.status ?? '—'}.`,
+      `Isolated — Grade ${grade}, no insured email. Status stays ${l.status ?? '—'}.`,
       {
         changes: [{ field: 'Isolated', from: 'no', to: 'yes' }],
         isolatedFromStatus: l.status ?? null,

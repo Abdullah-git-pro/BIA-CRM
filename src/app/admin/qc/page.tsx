@@ -157,6 +157,8 @@ type PipelineRow = {
   recoveredBy: string | null;
   /** Trust / company / municipality owned — never sent to a vendor. */
   entity: { label: string; matched: string } | null;
+  /** No insured first + last name on file, so no vendor can trace it. */
+  noName: boolean;
 };
 
 /**
@@ -1120,10 +1122,23 @@ export default function QcReportsPage() {
    * into promising work it will skip. Separated here so both numbers tell the truth.
    */
   const pipelineWorkable = useMemo(
-    () => pipeline.rows.filter((r) => !r.entity), [pipeline.rows],
+    () => pipeline.rows.filter((r) => !r.entity && !r.noName), [pipeline.rows],
   );
   const pipelineEntities = useMemo(
     () => pipeline.rows.filter((r) => r.entity), [pipeline.rows],
+  );
+  /**
+   * No insured name on file — held back for the same reason as a trust, listed apart
+   * from one because it is a different fact.
+   *
+   * A trust IS the owner of record; a blank name is a gap in our own data, usually a new
+   * build whose deed has not caught up — four of these sit on one street in Howell.
+   * Tracerfy refuses them outright, and three refusals in a row halt a run, so on the
+   * first real Grade B blast they stopped the batch and left 97 traceable leads
+   * unattempted.
+   */
+  const pipelineNoName = useMemo(
+    () => pipeline.rows.filter((r) => !r.entity && r.noName), [pipeline.rows],
   );
 
   const loadPipeline = useCallback(async (stage: PipelineStage) => {
@@ -1195,7 +1210,9 @@ export default function QcReportsPage() {
       const j = await (await fetch('/api/admin/recovery-pipeline', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ vendor, effFrom, effTo, dryRun, limit: MAX_PER_BLAST }),
+        // The grade travels with the run, or it blasts a different pipeline from the one
+        // on screen — see the note in the route.
+        body: JSON.stringify({ vendor, effFrom, effTo, dryRun, limit: MAX_PER_BLAST, grade: pipeGradeRef.current }),
       })).json();
       if (!j.success) throw new Error(j.error || 'Blast failed');
       const name = vendor === 'tracerfy' ? 'Tracerfy' : 'BatchData';
@@ -1206,7 +1223,8 @@ export default function QcReportsPage() {
           + (j.phoneOnly ? `, ${j.phoneOnly} gained a phone but no email` : '')
           + `, ${j.movedOn} moved on`
           // Said out loud: otherwise "tried 9" against a stage of 31 reads as a failure.
-          + (j.entityOwned ? `, ${j.entityOwned} trust/company owned and not called` : ''),
+          + (j.entityOwned ? `, ${j.entityOwned} trust/company owned and not called` : '')
+          + (j.noName ? `, ${j.noName} with no owner name and not called` : ''),
       }));
       await loadPipeline(vendor === 'tracerfy' ? 'isolated' : 'tracerfy');
     } catch (e) {
@@ -1256,13 +1274,20 @@ export default function QcReportsPage() {
     { busy: false, preview: null, msg: '' },
   );
 
-  const runIsolate = useCallback(async (dryRun: boolean) => {
+  /*
+   * The grade travels with the request.
+   *
+   * It did not, and the endpoint quietly assumed A. The pipeline's Grade B tab offered
+   * "Isolate 102", posted no grade, isolated the Grade A leads in range — none — and
+   * reported success. Nothing moved and nothing said why.
+   */
+  const runIsolate = useCallback(async (dryRun: boolean, grade: 'A' | 'B' = 'A') => {
     setIsolateState((r) => ({ ...r, busy: true, msg: '' }));
     try {
       const res = await fetch('/api/admin/isolate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dryRun, effFrom, effTo }),
+        body: JSON.stringify({ dryRun, effFrom, effTo, grade }),
       });
       const j = await res.json();
       if (!j.success) throw new Error(j.error || 'Isolate failed');
@@ -1386,7 +1411,7 @@ export default function QcReportsPage() {
           PIPELINE_COLUMNS.map((c) => esc(c.header)).join(','),
           // Workable first, then the trust-owned panel, so the file reads in the same
           // order as the screen. Both are written: they are one stage, shown apart.
-          ...[...pipelineWorkable, ...pipelineEntities]
+          ...[...pipelineWorkable, ...pipelineEntities, ...pipelineNoName]
             .map((r) => PIPELINE_COLUMNS.map((c) => esc(c.value(r))).join(',')),
         ]
         : [
@@ -2957,7 +2982,7 @@ const MAX_RENDERED = 300;
                       + 'BatchData. Each lead\'s current status is remembered and restored '
                       + 'automatically if an address turns up.\n\n'
                       + 'Nothing is sent and no vendor is called — this costs nothing.',
-                    )) runIsolate(false);
+                    )) runIsolate(false, pipeGrade);
                   }}
                 >
                   {isolateState.busy ? 'Working…' : `Isolate ${pipeline.counts.awaitingIsolation}`}
@@ -3201,6 +3226,67 @@ const MAX_RENDERED = 300;
               {pipelineEntities.length > MAX_RENDERED && (
                 <Typography sx={{ fontSize: 11, color: '#6b5a2e', mt: 0.75 }}>
                   Showing {MAX_RENDERED} of {pipelineEntities.length}.
+                </Typography>
+              )}
+            </Box>
+          )}
+
+          {/*
+            No name on file — the same exclusion, a different reason.
+
+            Kept out of the Trust & company panel deliberately. A trust IS the owner of
+            record and nothing will ever change that; a missing name is a hole in OUR data
+            that a re-pull could fill. Filing these as trusts would state something untrue
+            about the property and hide a fixable problem, so the panel says what it is and
+            names the remedy.
+          */}
+          {!!pipelineNoName.length && (
+            <Box
+              sx={{
+                mt: 2, p: 1.5, borderRadius: 1,
+                border: '1px solid #9fb3c8', bgcolor: '#f2f6fa',
+              }}
+            >
+              <Typography sx={{ fontSize: 13, fontWeight: 700, color: '#1f3d5c', mb: 0.25 }}>
+                No owner name on file — not skip traced ({pipelineNoName.length})
+              </Typography>
+              <Typography sx={{ fontSize: 12, color: '#3c5a77', mb: 1.25 }}>
+                The skip trace looks a person up by name, and these leads have no insured
+                first and last name recorded — so Tracerfy refuses them outright. They are
+                excluded from every blast and cost nothing. Unlike a trust this is fixable:
+                the name is usually missing because the deed had not been recorded when we
+                pulled the property, so a fresh pull of these addresses may fill it in.
+              </Typography>
+              <Box sx={{ maxHeight: 260, overflowY: 'auto' }}>
+                <Table size="small">
+                  <TableBody>
+                    {pipelineNoName.slice(0, MAX_RENDERED).map((r) => (
+                      <TableRow key={r.id} hover>
+                        <TableCell sx={{ fontSize: 11, fontFamily: 'monospace', border: 0, py: 0.4 }}>
+                          <Link href={`/leads/${r.id}?from=qc`} style={{ color: '#6b7280', textDecoration: 'none' }}>{r.id}</Link>
+                        </TableCell>
+                        <TableCell sx={{ fontSize: 12, border: 0, py: 0.4 }}>
+                          <Link href={`/leads/${r.id}?from=qc`} style={{ color: '#1565c0', textDecoration: 'none' }}>{r.address}</Link>
+                        </TableCell>
+                        <TableCell sx={{ fontSize: 12, border: 0, py: 0.4 }}>
+                          {r.city} <span style={{ color: '#9098a6' }}>{r.zip}</span>
+                        </TableCell>
+                        <TableCell sx={{ fontSize: 12, border: 0, py: 0.4 }}>{r.effectiveDate ?? '—'}</TableCell>
+                        <TableCell sx={{ border: 0, py: 0.4 }}>
+                          <Chip
+                            size="small"
+                            label="no name"
+                            sx={{ height: 19, fontSize: 11, bgcolor: '#9fb3c8', color: '#12263a', fontWeight: 700 }}
+                          />
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </Box>
+              {pipelineNoName.length > MAX_RENDERED && (
+                <Typography sx={{ fontSize: 11, color: '#3c5a77', mt: 0.75 }}>
+                  Showing {MAX_RENDERED} of {pipelineNoName.length}.
                 </Typography>
               )}
             </Box>

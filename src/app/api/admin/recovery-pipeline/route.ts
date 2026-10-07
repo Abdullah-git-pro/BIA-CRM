@@ -62,18 +62,28 @@ export async function POST(request: NextRequest) {
     if (vendor !== 'tracerfy' && vendor !== 'batchdata') {
       return NextResponse.json({ success: false, error: 'vendor must be tracerfy or batchdata' }, { status: 400 });
     }
+    /*
+     * The grade decides which pipeline runs, and it has to be carried here.
+     *
+     * The GET above already takes one. This did not, so a run launched from the Grade B
+     * tab blasted the Grade A stage — empty — and reported "tried 0". The counts returned
+     * afterwards were Grade A's too, so the screen redrew with the wrong pipeline's
+     * numbers on top of it.
+     */
+    const grade: 'A' | 'B' = body?.grade === 'B' ? 'B' : 'A';
     const opts = {
       effFrom: body?.effFrom || undefined,
       effTo: body?.effTo || undefined,
       limit: Math.min(Math.max(Number(body?.limit) || 25, 1), 200),
       dryRun: body?.dryRun !== false,
       createdBy: body?._createdBy ?? null,
+      grade,
     };
     const result = vendor === 'tracerfy'
       ? await runTracerfyBlast(opts)
       : await runBatchDataBlast(opts);
-    const counts = await stageCounts(opts.effFrom, opts.effTo);
-    return NextResponse.json({ success: true, ...result, counts });
+    const counts = await stageCounts(opts.effFrom, opts.effTo, grade);
+    return NextResponse.json({ success: true, grade, ...result, counts });
   } catch (error: any) {
     console.error('POST /api/admin/recovery-pipeline error:', error);
     return NextResponse.json(

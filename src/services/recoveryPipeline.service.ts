@@ -155,6 +155,22 @@ export type PipelineRow = {
    * to look up — so the pipeline reports them rather than quietly never draining them.
    */
   entity: { label: string; matched: string } | null;
+  /**
+   * No insured first AND last name on file, so no person-level trace is possible.
+   *
+   * ── Why this is its own flag and not folded into `entity` ───────────────────
+   * Both end the same way — the lead cannot go to a vendor, so it is held back rather
+   * than queued — but they are not the same fact. A trust IS the owner of record; a
+   * blank name is a HOLE in our data, usually a new-build where the deed has not caught
+   * up. Four of these sit on one street in Howell. Filing them as "trust or company
+   * owned" would state something untrue about the property and bury a data problem we
+   * could actually fix by re-pulling the record.
+   *
+   * Tracerfy refuses them outright — "Skip trace needs the insured first + last name on
+   * file" — and three refusals in a row stop the whole run, so 97 perfectly traceable
+   * leads in the same batch went unattempted because of them.
+   */
+  noName: boolean;
 };
 
 export async function leadsAtStage(
@@ -200,6 +216,8 @@ export async function leadsAtStage(
         const e = ownerEntityOf(r as any);
         return e ? { label: e.label, matched: e.matched } : null;
       })(),
+      // Both names, not either: Tracerfy's enhanced lookup takes first AND last.
+      noName: !String(r.owner1FirstName ?? '').trim() || !String(r.owner1LastName ?? '').trim(),
     }));
 }
 
@@ -234,6 +252,11 @@ export type BlastResult = {
    * blast will never touch is how a queue looks stuck for no stated reason.
    */
   entityOwned: number;
+  /**
+   * Held back because no insured first + last name is on file, so no person-level trace
+   * is possible. Also NOT in `pool`, for the same reason entityOwned is not.
+   */
+  noName: number;
   errors: { id: string; error: string }[];
   /**
    * Set when the run ended itself instead of finishing the pool — out of credits, a bad
@@ -492,12 +515,27 @@ export async function advanceAfterTrace(opts: {
 
 async function runBlast(
   vendor: 'tracerfy' | 'batchdata',
-  opts: { effFrom?: string; effTo?: string; limit?: number; dryRun?: boolean; createdBy?: string | null },
+  opts: {
+    effFrom?: string; effTo?: string; limit?: number; dryRun?: boolean; createdBy?: string | null;
+    /**
+     * Which pipeline to run. Defaults to A, which is all this used to do.
+     *
+     * ── Why it was wrong without this ────────────────────────────────────────
+     * The screen's GET already passed a grade and drew the Grade B pipeline — 628 leads
+     * waiting at the Tracerfy stage. The POST did not, so the blast read the Grade A
+     * stage, found it empty, and reported "tried 0, matched 0, recovered 0". The button
+     * appeared to do nothing because it was working on a different pipeline from the one
+     * on screen.
+     *
+     * Same fault as the Isolate button one panel up, fixed the same day.
+     */
+    grade?: 'A' | 'B';
+  },
 ): Promise<BlastResult> {
-  const { effFrom, effTo, limit = 25, dryRun = true, createdBy = null } = opts;
+  const { effFrom, effTo, limit = 25, dryRun = true, createdBy = null, grade = 'A' } = opts;
   const fromStage: RecoveryStage = vendor === 'tracerfy' ? 'isolated' : 'tracerfy';
 
-  const stageRows = await leadsAtStage(fromStage, effFrom, effTo);
+  const stageRows = await leadsAtStage(fromStage, effFrom, effTo, grade);
 
   /**
    * Entity-owned leads never go to a vendor (Frank Sep-2026).
@@ -513,12 +551,26 @@ async function runBlast(
    * instead of leaving a queue that mysteriously never drains.
    */
   const entityOwned = stageRows.filter((r) => r.entity !== null);
-  const pool = stageRows.filter((r) => r.entity === null);
+  /**
+   * Leads with no name on file are held back for the same reason and at the same point.
+   *
+   * Tracerfy rejects them — "Skip trace needs the insured first + last name on file" —
+   * and the run's three-strikes guard counts those refusals as vendor failures. On the
+   * first real Grade B run that stopped the batch after three of them and left 97
+   * traceable leads unattempted. Splitting them out before the limit, exactly as the
+   * trusts are, means a cluster of nameless records can neither consume the allowance
+   * nor halt the run.
+   *
+   * Counted after entityOwned so a lead that is both is reported once, as the trust it is.
+   */
+  const noName = stageRows.filter((r) => r.entity === null && r.noName);
+  const pool = stageRows.filter((r) => r.entity === null && !r.noName);
 
   const out: BlastResult = {
     vendor, dryRun, pool: pool.length,
     attempted: 0, matched: 0, recovered: 0, phoneOnly: 0, movedOn: 0, regraded: 0,
-    skippedAlreadyTraced: 0, entityOwned: entityOwned.length, heldFromFrozenCohort: 0, errors: [],
+    skippedAlreadyTraced: 0, entityOwned: entityOwned.length, noName: noName.length,
+    heldFromFrozenCohort: 0, errors: [],
   };
   if (dryRun) return out;
 
@@ -549,7 +601,7 @@ async function runBlast(
     considered: pool.length,
     runBy: createdBy,
     dryRun: false,
-    detail: { limit, entityOwned: entityOwned.length, batch: batch.length },
+    detail: { limit, entityOwned: entityOwned.length, noName: noName.length, batch: batch.length },
   });
 
   /**
@@ -571,6 +623,17 @@ async function runBlast(
      * transfers into a trust. This costs one regex and is the last point before a charge.
      */
     if (ownerEntityOf(lead)) { out.entityOwned++; continue; }
+
+    /*
+     * Re-checked here for the same reason the entity test is: the lead is read fresh
+     * inside the loop, and this is the last point before a charge. A name that has gone
+     * missing since the pool was built would otherwise be sent to a vendor that cannot
+     * use it — and the refusal counts toward the three-in-a-row stop.
+     */
+    if (!String(lead.owner1FirstName ?? '').trim() || !String(lead.owner1LastName ?? '').trim()) {
+      out.noName++;
+      continue;
+    }
 
     /**
      * Never pay a vendor to answer a question it has already answered.
