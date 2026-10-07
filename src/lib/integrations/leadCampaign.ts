@@ -40,14 +40,36 @@ const MAX_PAGES = 10;
 const PAGE_SIZE = 100;
 
 /**
- * 18 of the vendor's 20, because the two windows are not the same clock.
+ * ── TWO budgets, because the vendor has two limits ───────────────────────────
  *
- * The vendor's minute starts whenever it decides; ours starts at the first request we
- * count. Near a boundary our "20th" can be its "21st", so the last two are left unused
- * and the retry below absorbs the rest.
+ * Documented 7 Oct 2026 (developer.instantly.ai/getting-started/rate-limit):
+ *
+ *   the whole workspace   6,000 requests per minute, and 100 per second
+ *   GET /emails           20 per minute — "unlike other API endpoints"
+ *
+ * The 20 was found the hard way, while paging the reply inbox, and then applied here to
+ * EVERY endpoint. That is 300 times stricter than the real limit, and it is why opening a
+ * campaign page — eight requests against a budget of six thousand — could tell a producer
+ * the campaign tool was busy. The limit was ours, not the vendor's.
+ *
+ * So the strict budget now applies only to the endpoint that actually carries it, and
+ * everything else is governed by the per-second ceiling. That one still needs guarding:
+ * addLeadsToCampaign sends one request per lead, so a push of a few hundred would sail
+ * past 100 a second on its own.
  */
-const RATE_BUDGET = 18;
-const RATE_WINDOW_MS = 60_000;
+const EMAILS_BUDGET = 18;        // of the vendor's 20 — see the clock note below
+const EMAILS_WINDOW_MS = 60_000;
+
+/**
+ * 80 of the vendor's 100 a second. The headroom is for the same reason as below: their
+ * second and ours do not start at the same instant.
+ */
+const GENERAL_BUDGET = 80;
+const GENERAL_WINDOW_MS = 1_000;
+
+/** Which paths carry the strict limit. */
+const isEmailsPath = (path: string) => path.startsWith('/emails');
+
 /**
  * How long a caller will queue for a slot.
  *
@@ -68,15 +90,29 @@ const RATE_MAX_WAIT_MS = 8_000;
 const RATE_COOLDOWN_MS = 6_000;
 const RETRY_429_TIMES = 1;
 
-const limiter = new RateLimiter({
-  budget: RATE_BUDGET,
-  windowMs: RATE_WINDOW_MS,
+const emailsLimiter = new RateLimiter({
+  budget: EMAILS_BUDGET,
+  windowMs: EMAILS_WINDOW_MS,
   maxWaitMs: RATE_MAX_WAIT_MS,
 });
 
+/**
+ * The per-second ceiling for everything else.
+ *
+ * maxWaitMs is small because the window is one second: a caller that cannot get a slot
+ * within three is in a loop big enough to deserve batching, not more queueing.
+ */
+const generalLimiter = new RateLimiter({
+  budget: GENERAL_BUDGET,
+  windowMs: GENERAL_WINDOW_MS,
+  maxWaitMs: 3_000,
+});
+
+const limiterFor = (path: string) => (isEmailsPath(path) ? emailsLimiter : generalLimiter);
+
 /** Slots left in this process's window. For diagnostics — never branch on it. */
 export function rateBudgetRemaining(): number {
-  return limiter.available();
+  return emailsLimiter.available();
 }
 
 function apiKey(): string {
@@ -119,13 +155,16 @@ async function apiFetch(path: string, init: RequestInit = {}): Promise<Response>
    */
   let res: Response | null = null;
   for (let attempt = 0; ; attempt++) {
+    const limiter = limiterFor(path);
     try {
       await limiter.take();
     } catch (err) {
       if (err instanceof RateLimitExceededError) {
         throw new Error(
-          'Campaign tool is busy — it allows 20 requests a minute, and that budget is '
-          + 'shared by everyone using the CRM. Give it a few seconds and try again.',
+          isEmailsPath(path)
+            ? 'The reply inbox is busy — the platform allows 20 requests a minute on that '
+              + 'one feed. Give it a few seconds and try again.'
+            : 'Campaign tool is busy — too many requests at once. Try again in a moment.',
         );
       }
       throw err;
@@ -146,8 +185,10 @@ async function apiFetch(path: string, init: RequestInit = {}): Promise<Response>
     limiter.block(RATE_COOLDOWN_MS);
     if (attempt >= RETRY_429_TIMES) {
       throw new Error(
-        'Campaign tool is rate limited — it allows 20 requests a minute, and that budget '
-        + 'is shared by everyone using the CRM. Give it a few seconds and try again.',
+        isEmailsPath(path)
+          ? 'The reply inbox is rate limited — the platform allows 20 requests a minute on '
+            + 'that feed, shared across the workspace. Give it a few seconds and try again.'
+          : 'Campaign tool is rate limited. Give it a few seconds and try again.',
       );
     }
   }
@@ -625,8 +666,12 @@ export async function listLeadsInCampaign(campaignId: string): Promise<VendorLea
       '/leads/list',
       { campaign: campaignId, limit: PAGE_SIZE, ...(cursor ? { starting_after: cursor } : {}) },
     );
-    out.push(...(json.items ?? []));
-    if (!json.next_starting_after) break;
+    const items = json.items ?? [];
+    out.push(...items);
+    // Short page = end of list. This one was missed when the rule went into the other
+    // pagers, and it is the one on the hot path: every campaign page load calls it, so
+    // every campaign page load spent a request being told there was nothing more.
+    if (lastPage(items, PAGE_SIZE, json.next_starting_after)) break;
     cursor = json.next_starting_after;
   }
   return out.filter((l) => !l.campaign || l.campaign === campaignId);
