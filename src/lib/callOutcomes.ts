@@ -260,3 +260,32 @@ export function meetsUnreachableRule(input: {
     && input.distinctDays >= UNREACHABLE_RULE.minDistinctDays
     && enoughNumbers;
 }
+
+/**
+ * The first rank at which a traced number stops counting as "worth ringing".
+ *
+ * The vendor returns a person's whole number history, best first — a median of one
+ * number, but 21 for the co-insured on one card. Measured against every call logged so
+ * far, how dead a number turns out to be tracks its rank almost exactly:
+ *
+ *     rank 1     34 calls   53% bad number or wrong person
+ *     rank 2-3   37 calls   68%
+ *     rank 4-6   26 calls   85%
+ *     rank 7-10  12 calls   92%
+ *     rank 11+    2 calls  100%
+ *
+ * Nobody has ever reached a person at rank 7 or deeper — 0 of 14.
+ *
+ * It lives here, beside the stop rule, because two screens have to agree about it: the
+ * Phone list stops counting these numbers and the call card has to say why, or Ruben is
+ * shown 26 numbers on one screen and 10 on the other. Cutting at 4 instead would have
+ * left 15 accounts reading as nothing-left-to-ring, which is why the line is at 7.
+ *
+ * A number the vendor never ranked came with the policy and is never in this tier.
+ */
+export const DEEP_TAIL_RANK = 7;
+
+/** Is this number deep enough in the vendor's list to be held back as a reserve? */
+export function isDeepTail(rank: number | null | undefined): boolean {
+  return (rank ?? 0) >= DEEP_TAIL_RANK;
+}

@@ -8,7 +8,7 @@ import { addActivity } from './storage.service';
 import { closeRemindersForCall } from './callReminder.service';
 import {
   CALL_OUTCOMES, CALL_OUTCOME_LABEL, STATUS_FOR_OUTCOME,
-  meetsUnreachableRule,
+  meetsUnreachableRule, isDeepTail,
   NOT_INTERESTED_RECONTACT_DAYS_BEFORE_RENEWAL,
   type CallOutcome, type CallStatus,
 } from '@/lib/callOutcomes';
@@ -256,7 +256,51 @@ export function invalidPhonesOf(lead: Record<string, unknown>): string[] {
  */
 export function liveNumbersOnCard(lead: Record<string, unknown>): ReturnType<typeof numbersOnCard> {
   const dead = new Set(invalidPhonesOf(lead));
-  return numbersOnCard(lead).filter((n) => !n.dnc && !dead.has(n.number));
+  const live = numbersOnCard(lead).filter((n) => !n.dnc && !dead.has(n.number));
+
+  /**
+   * ── The tail of a person's number history is not "worth ringing" ─────────
+   *
+   * The vendor returns every number it has ever associated with a person, best first.
+   * That is 21 numbers for one co-insured on Tyisha Bennett's card, against a median of
+   * one. Measured against every call logged so far, how dead a number turns out to be
+   * tracks its rank almost perfectly:
+   *
+   *     rank 1     34 calls   53% bad number or wrong person
+   *     rank 2-3   37 calls   68%
+   *     rank 4-6   26 calls   85%
+   *     rank 7-10  12 calls   92%
+   *     rank 11+    2 calls  100%
+   *
+   * Nobody has ever reached a person on a number ranked 7 or deeper — 0 of 14.
+   *
+   * This matters beyond the count, because the Phone screen SORTS by it. Carrying a
+   * stale history put Tyisha Bennett at 25 "worth ringing" and sorted her above an
+   * account with three good numbers, which is the opposite of what the ordering is for.
+   * Demoting the tail reorders 6 of the top 10 cards in Ruben's queue.
+   *
+   * DEMOTED, NOT REMOVED. numbersOnCard still returns them and the card still shows
+   * them, so they remain there to dial once the rest are exhausted — the same treatment
+   * do-not-call numbers get, and for the same reason. A number we merely doubt is not a
+   * number we may hide.
+   *
+   * The last-resort guard is the point of the `.length ? :` rather than a measurement
+   * that happened to come out at zero: an account whose every number is ranked deep is
+   * still an account with numbers, and it must never read as nothing left to ring.
+   */
+  const current = live.filter((n) => !isDeepTail(n.rank));
+  return current.length ? current : live;
+}
+
+/** The first rank at which a number stops counting towards "worth ringing". */
+export const DEEP_TAIL_RANK = 7;
+
+/** Live numbers held back as a reserve because they sit deep in the vendor's ranking. */
+export function reserveNumbersOnCard(lead: Record<string, unknown>): ReturnType<typeof numbersOnCard> {
+  const dead = new Set(invalidPhonesOf(lead));
+  const live = numbersOnCard(lead).filter((n) => !n.dnc && !dead.has(n.number));
+  const counted = new Set(liveNumbersOnCard(lead).map((n) => n.number));
+  return live.filter((n) => !counted.has(n.number));
 }
 
 /**

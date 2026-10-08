@@ -1,6 +1,6 @@
 import { sql } from '@/lib/neon';
 import { insuredEmails, coInsuredName } from './recipients.service';
-import { numbersOnCard, liveNumbersOnCard, invalidPhonesOf } from './callLog.service';
+import { numbersOnCard, liveNumbersOnCard, reserveNumbersOnCard, invalidPhonesOf } from './callLog.service';
 import { deliverableAddresses } from './emailVerification.service';
 import { COHORT_LABEL } from './campaignSegment.service';
 import { CALL_STATUS_LABEL, isReachedStatus, type CallStatus } from '@/lib/callOutcomes';
@@ -52,6 +52,8 @@ export type PhoneQueueRow = {
   numbers: number;
   /** Retired by a bad-number or wrong-person outcome. Not worth ringing again. */
   deadNumbers: number;
+  /** Still dialable, but deep in the vendor's ranking — held back rather than counted. */
+  reserveNumbers: number;
   dncNumbers: number;
   callable: number;
   callStatus: CallStatus;
@@ -157,6 +159,9 @@ export async function getPhoneDashboard(f: PhoneFilters = {}): Promise<PhoneDash
     // nums - live - dnc would quietly count it twice and report a negative.
     const dead = new Set(invalidPhonesOf(l));
     const deadNumbers = nums.filter((n) => dead.has(n.number)).length;
+    // Counted, not derived, for the same reason as deadNumbers: callable + dnc + dead +
+    // reserve is NOT the total, because one number can be in two of those at once.
+    const reserveNumbers = reserveNumbersOnCard(l).length;
     if (!nums.length) c.noNumbers++;
     if (!callable && !isVerified) unreachableAnyChannel++;
 
@@ -183,6 +188,7 @@ export async function getPhoneDashboard(f: PhoneFilters = {}): Promise<PhoneDash
       numbers: nums.length,
       dncNumbers: nums.filter((n) => n.dnc).length,
       deadNumbers,
+      reserveNumbers,
       callable,
       callStatus: status,
       callStatusLabel: CALL_STATUS_LABEL[status] ?? status,

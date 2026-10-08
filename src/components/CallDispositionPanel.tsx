@@ -1,6 +1,7 @@
 'use client';
 
 import { easternDisplay } from '@/lib/wallClock';
+import { isDeepTail } from '@/lib/callOutcomes';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Box, Paper, Typography, Stack, Chip, Button, TextField, Alert, Divider, Tooltip,
@@ -508,6 +509,16 @@ export default function CallDispositionPanel({ leadId }: { leadId: string }) {
                     d.label === 'trace' ? 'found by a skip trace' : 'on the policy record',
                     d.type ? d.type.toLowerCase() : null,
                     d.rank != null ? `vendor rank ${d.rank}` : null,
+                    /*
+                     * Say so rather than quietly sorting it last.
+                     *
+                     * Of every call logged so far, not one person has been reached on a
+                     * number ranked 7 or deeper — 0 of 14, and 13 of those 14 came back
+                     * a bad number or the wrong person. The Phone screen stops counting
+                     * these towards "worth ringing", so the card has to say the same
+                     * thing or the two screens disagree in front of Ruben.
+                     */
+                    isDeepTail(d.rank) ? 'DEEP IN THE VENDOR LIST — a long shot, try the others first' : null,
                     d.dnc ? 'ON THE DO-NOT-CALL LIST' : null,
                     last
                       ? `last tried ${easternDisplay(last.attemptedAt)} — ${CALL_OUTCOME_LABEL[last.outcome]}`

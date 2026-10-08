@@ -109,7 +109,7 @@ export default function PhoneDashboardPage() {
   const exportCsv = () => {
     if (!data) return;
     const cols = ['cohort', 'propertyId', 'owner', 'address', 'renewal', 'premium',
-      'verifiedEmail', 'numbers', 'callableNumbers', 'dncNumbers', 'deadNumbers', 'callStatus',
+      'verifiedEmail', 'numbers', 'callableNumbers', 'dncNumbers', 'deadNumbers', 'reserveNumbers', 'callStatus',
       'attempts', 'attemptsToCoInsured', 'reachedVia',
       'coInsuredName', 'coInsuredNumbers', 'coInsuredLive', 'insuredLive'];
     const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
@@ -117,7 +117,7 @@ export default function PhoneDashboardPage() {
       cols.map(esc).join(','),
       ...data.queue.map((q) => [
         q.cohortLabel, q.propertyId, q.owner, q.address, q.renewal, q.premium ?? '',
-        q.verified ? 'yes' : 'no', q.numbers, q.callable, q.dncNumbers, q.deadNumbers,
+        q.verified ? 'yes' : 'no', q.numbers, q.callable, q.dncNumbers, q.deadNumbers, q.reserveNumbers,
         q.callStatusLabel, q.attempts,
       ].map(esc).join(',')),
     ].join('\r\n');
@@ -390,6 +390,9 @@ export default function PhoneDashboardPage() {
                           : null,
                         q.dncNumbers ? `${q.dncNumbers} on the do-not-call list` : null,
                         q.deadNumbers ? `${q.deadNumbers} already logged as a bad number or wrong person` : null,
+                        q.reserveNumbers
+                          ? `${q.reserveNumbers} held in reserve — deep in the vendor's list, where nobody has yet reached anyone`
+                          : null,
                       ].filter(Boolean).join(' · ')}>
                         <span style={{ cursor: 'help', fontWeight: 700, color: q.callable ? undefined : '#b3261e' }}>
                           {q.callable}/{q.numbers}
