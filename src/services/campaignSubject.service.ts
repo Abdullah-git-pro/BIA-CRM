@@ -1,6 +1,6 @@
 import { sql } from '@/lib/neon';
 import { subjectFor, type Segment } from './campaignSegment.service';
-import { cohortNumber } from './cohort';
+import { cohortNumber, numberedCohorts, numberedCohortCodes } from './cohort';
 import { unknownTokensIn } from '@/lib/mergeFields';
 import { globalMergeVars } from './globalMergeVars.service';
 
@@ -168,7 +168,10 @@ export async function subjectCoverage(): Promise<{
   checked: number; missing: Array<{ segment: string; cohort: string; step: number; variant: string }>;
 }> {
   const lookup = await subjectLookup();
-  const weeks = ['2026-10-05', '2026-10-12', '2026-10-19', '2026-10-26', '2026-11-02', '2026-11-09', '2026-11-16'];
+  // Every numbered week, not the seven that were typed here. This guard exists to report
+  // a missing line, and with C8 absent from the list it reported full coverage while all
+  // twelve of C8's rated and unrated lines were missing.
+  const weeks = numberedCohorts();
   const missing: Array<{ segment: string; cohort: string; step: number; variant: string }> = [];
   let checked = 0;
   const { stepsFor } = await import('./campaignSegment.service');
@@ -224,7 +227,14 @@ export interface Routing {
   cohorts: string[];
 }
 
-export const COHORT_CODES = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7'] as const;
+/**
+ * Every cohort a routing claim can cover, for expanding "empty means every cohort".
+ *
+ * Derived rather than listed: a line claiming all cohorts has to collide with one
+ * claiming C8, and while this stopped at C7 that overlap could not be detected — the
+ * exact silence routingConflicts() is written to prevent.
+ */
+export const COHORT_CODES: readonly string[] = numberedCohortCodes();
 
 /**
  * Two lines cannot claim the same audience.

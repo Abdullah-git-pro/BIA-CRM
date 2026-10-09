@@ -6,6 +6,9 @@ import {
   MenuItem, TextField, LinearProgress,
 } from '@mui/material';
 import RefreshIcon from '@mui/icons-material/Refresh';
+// Safe from a client component: services/cohort.ts has no imports at all, so nothing
+// server-only rides in with it. That is why the cohort rules live there.
+import { numberedCohorts, cohortCode, cohortEnd } from '@/services/cohort';
 
 /**
  * What has actually been dialled, and what has not.
@@ -40,15 +43,34 @@ type Summary = {
   byOutcome: Record<string, number>;
 };
 
-const COHORTS: Array<{ value: string; label: string }> = [
-  { value: '2026-10-05', label: 'C1 — Oct 5–11' },
-  { value: '2026-10-12', label: 'C2 — Oct 12–18' },
-  { value: '2026-10-19', label: 'C3 — Oct 19–25' },
-  { value: '2026-10-26', label: 'C4 — Oct 26–Nov 1' },
-  { value: '2026-11-02', label: 'C5 — Nov 2–8' },
-  { value: '2026-11-09', label: 'C6 — Nov 9–15' },
-  { value: '2026-11-16', label: 'C7 — Nov 16–22' },
-];
+/**
+ * The weeks this screen can filter to, counted forward rather than listed.
+ *
+ * ── Why this is not a list any more ─────────────────────────────────────────
+ * It was seven hand-written lines ending at C7, so the week of 23 Nov — 702 leads, 165 of
+ * them Grade A — could not be selected. The data had an eighth week; the dropdown did
+ * not, and said nothing about it.
+ *
+ * That is the same failure three times over: COHORT_LABEL hit it on the cohort ledger,
+ * where C8 drew a dash, and the phone screen's own copy hit it this week. cohort.ts
+ * already replaced the ledger's list with arithmetic for exactly this reason, so the
+ * dates here come from it rather than from a fourth copy — COHORT_ONE_MONDAY is the
+ * anchor every other count starts from, cohortCode numbers the week, cohortEnd closes it.
+ *
+ * Only the formatting is local. cohortLabel() would read "Oct 5 – 11, 2026", and the year
+ * is noise in a dropdown where every option is 2026; the compact range is what was on
+ * screen before and what fits the control.
+ */
+const COHORTS: Array<{ value: string; label: string }> = numberedCohorts().map((value) => {
+  const monday = new Date(`${value}T00:00:00Z`);
+  const end = new Date(`${cohortEnd(value)}T00:00:00Z`);
+  const mon = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' });
+  // "Oct 5–11" within a month; "Oct 26–Nov 1" across one.
+  const range = mon(monday) === mon(end)
+    ? `${mon(monday)} ${monday.getUTCDate()}–${end.getUTCDate()}`
+    : `${mon(monday)} ${monday.getUTCDate()}–${mon(end)} ${end.getUTCDate()}`;
+  return { value, label: `${cohortCode(value)} — ${range}` };
+});
 
 const STATE_COLOUR: Record<Card['state'], { bg: string; fg: string; label: string }> = {
   untouched: { bg: '#fdecea', fg: '#b3261e', label: 'not started' },

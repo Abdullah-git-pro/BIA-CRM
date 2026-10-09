@@ -121,3 +121,40 @@ export function cohortCode(cohort: string | null | undefined): string | null {
   const n = cohortNumber(cohort);
   return n > 0 ? `C${n}` : null;
 }
+
+/**
+ * How many numbered waves exist. The one place that number is written down.
+ *
+ * ── Why this is here and not in each screen ─────────────────────────────────
+ * Five places had their own copy of the numbered weeks, all of them stopping at C7, and
+ * each one failed differently when the data reached C8: the cohort ledger drew a dash
+ * against 165 Grade A leads, the phone and call-coverage filters could not select the
+ * week at all, the routing conflict check could not see a line claiming it, and the
+ * subject coverage guard — whose entire job is to report a missing line — reported full
+ * coverage while twelve lines were missing.
+ *
+ * That is the same bug five times, so what changes when a wave is added is now one
+ * number rather than five lists. Raise it when the data gains a week; everything that
+ * counts weeks follows.
+ */
+export const COHORT_COUNT = 8;
+
+/**
+ * Every numbered cohort as its Monday, C1 first: ['2026-10-05', …].
+ *
+ * Arithmetic from COHORT_ONE_MONDAY, in UTC, for the reason given on cohortOf: a
+ * local-time Date shifts the day either side of midnight, and a Monday-anchored week
+ * cannot survive that.
+ */
+export function numberedCohorts(): string[] {
+  return Array.from({ length: COHORT_COUNT }, (_, i) => {
+    const d = new Date(`${COHORT_ONE_MONDAY}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + i * 7);
+    return d.toISOString().slice(0, 10);
+  });
+}
+
+/** Every numbered cohort as its code, C1 first: ['C1', …]. */
+export function numberedCohortCodes(): string[] {
+  return numberedCohorts().map((c) => cohortCode(c)!);
+}

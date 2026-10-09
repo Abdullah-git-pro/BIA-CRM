@@ -29,12 +29,16 @@ import { cohortCode } from './cohort';
  * the dashboard says so rather than reporting the whole book as unreachable.
  */
 
+export type PhoneGrade = 'A' | 'B';
+
 export type PhoneFilters = {
   cohortFrom?: string;
   cohortTo?: string;
   /** 'unverified' is the call-first list; 'all' is everything rated. */
   reach?: 'all' | 'verified' | 'unverified';
   status?: CallStatus | 'all';
+  /** Which book to ring. One grade at a time — see WHO IS IN THE LIST below. */
+  grade?: PhoneGrade;
 };
 
 export type PhoneQueueRow = {
@@ -75,7 +79,15 @@ export type PhoneQueueRow = {
 
 export type PhoneDashboard = {
   filters: Required<Pick<PhoneFilters, 'cohortFrom' | 'cohortTo'>> & PhoneFilters;
-  /** Frank's three headline numbers. */
+  /** Which book this is. The headline numbers mean different things per grade. */
+  grade: PhoneGrade;
+  /**
+   * Frank's three headline numbers.
+   *
+   * `rated` is the size of the list, whatever put an account in it — a band price on
+   * Grade A, a number on the card on Grade B. The page labels it per grade rather than
+   * calling a Grade B account "rated", which it is not.
+   */
   rated: number;
   verifiedEmail: number;
   nonVerified: number;
@@ -100,15 +112,52 @@ export async function getPhoneDashboard(f: PhoneFilters = {}): Promise<PhoneDash
   const cohortTo = f.cohortTo || WAVE_TO;
   const reach = f.reach ?? 'all';
   const wantStatus = f.status ?? 'all';
+  const grade: PhoneGrade = f.grade === 'B' ? 'B' : 'A';
 
-  const leads = await sql`
-    SELECT * FROM "Lead"
-     WHERE "cohort" BETWEEN ${cohortFrom} AND ${cohortTo}
-       AND COALESCE("manualGrade", "grade") = 'A'
-       -- Rated only. Frank's three numbers are all "of the rated", because an unrated
-       -- account has no band price to talk about and belongs in a different conversation.
-       AND ("travelersPremium" IS NOT NULL OR "plymouthPremium" IS NOT NULL)
-     ORDER BY "cohort", "owner1LastName"` as Array<Record<string, any>>;
+  /**
+   * ── WHO IS IN THE LIST, and why it is not one rule ──────────────────────────
+   *
+   * Grade A: rated, meaning a producer has entered a band price. Frank's three numbers
+   * are all "of the rated", because an unrated account has no price to talk about and
+   * belongs in a different conversation.
+   *
+   * Grade B: there IS no band price. Not "usually missing" — zero of the 3,151 Grade B
+   * leads in the current wave carry one, because having one is most of what makes a lead
+   * Grade A. Reusing the Grade A rule here would return an empty screen and look like a
+   * bug, so the question each grade answers has to differ:
+   *
+   *     Grade A   "which priced accounts can email not reach"
+   *     Grade B   "which of these can we reach at all"
+   *
+   * For Grade B the gate is therefore a number on the card rather than a price. That is
+   * 528 accounts of 3,151 — the other 2,623 are mostly untraced and there is nothing to
+   * dial, so putting them in a call queue would describe work that cannot be done.
+   *
+   * ── Why one grade at a time ─────────────────────────────────────────────────
+   * The same reason the skip-trace blast refuses to mix them. A Grade A call opens with a
+   * price; a Grade B call cannot. They are two different conversations, and a queue that
+   * interleaves them hands Ruben a card without telling him which one he is having.
+   */
+  const leads = (grade === 'B'
+    ? await sql`
+        SELECT * FROM "Lead"
+         WHERE "cohort" BETWEEN ${cohortFrom} AND ${cohortTo}
+           AND COALESCE("manualGrade", "grade") = 'B'
+           -- A number of some kind. Whether it is worth ringing is decided per card
+           -- below; this only keeps out the accounts with nothing on them at all.
+           AND (
+             ("phone1" IS NOT NULL AND "phone1" <> '')
+             OR ("phone2" IS NOT NULL AND "phone2" <> '')
+             OR ("owner2Phone" IS NOT NULL AND "owner2Phone" <> '')
+             OR "skipTraceData" IS NOT NULL
+           )
+         ORDER BY "cohort", "owner1LastName"`
+    : await sql`
+        SELECT * FROM "Lead"
+         WHERE "cohort" BETWEEN ${cohortFrom} AND ${cohortTo}
+           AND COALESCE("manualGrade", "grade") = 'A'
+           AND ("travelersPremium" IS NOT NULL OR "plymouthPremium" IS NOT NULL)
+         ORDER BY "cohort", "owner1LastName"`) as Array<Record<string, any>>;
 
   const deliverable = await deliverableAddresses();
   const [{ n: checked }] = await sql`
@@ -252,7 +301,8 @@ export async function getPhoneDashboard(f: PhoneFilters = {}): Promise<PhoneDash
   const quoting = queue.filter((q) => q.callStatus === 'quoting').length;
 
   return {
-    filters: { cohortFrom, cohortTo, reach, status: wantStatus },
+    filters: { cohortFrom, cohortTo, reach, status: wantStatus, grade },
+    grade,
     rated,
     verifiedEmail: verifiedCount,
     nonVerified,
@@ -261,9 +311,13 @@ export async function getPhoneDashboard(f: PhoneFilters = {}): Promise<PhoneDash
     funnel: [
       {
         key: 'to_call', label: 'In this list', count: queue.length, of: null,
-        note: reach === 'unverified'
-          ? 'Rated accounts with no verified email — the ones email cannot reach.'
-          : 'Rated accounts matching the filters.',
+        note: grade === 'B'
+          ? (reach === 'unverified'
+            ? 'Grade B accounts we hold a number for and email cannot reach. No band price to quote on these.'
+            : 'Grade B accounts we hold a number for. No band price to quote on these.')
+          : (reach === 'unverified'
+            ? 'Rated accounts with no verified email — the ones email cannot reach.'
+            : 'Rated accounts matching the filters.'),
       },
       { key: 'called', label: 'Called at least once', count: called, of: 'to_call' },
       {

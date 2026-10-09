@@ -28,6 +28,25 @@ export async function GET(request: NextRequest) {
     const status = q.get('status');
     if (status) filters.status = status as CallStatus | 'all';
 
+    /*
+     * An unknown grade is rejected rather than quietly treated as A.
+     *
+     * The same mistake the Isolate route made, and it cost a day: it defaulted, so every
+     * button on the Grade B tab acted on Grade A and reported success. Here the two
+     * grades select different populations by different rules, so a silent fallback would
+     * put a priced Grade A queue under a Grade B heading.
+     */
+    const grade = q.get('grade');
+    if (grade != null && grade !== '') {
+      if (grade !== 'A' && grade !== 'B') {
+        return NextResponse.json(
+          { success: false, error: `Unknown grade "${grade}" — this screen covers Grade A and Grade B.` },
+          { status: 400 },
+        );
+      }
+      filters.grade = grade;
+    }
+
     return NextResponse.json({ success: true, ...await getPhoneDashboard(filters) });
   } catch (error) {
     console.error('GET /api/admin/phone-dashboard error:', error);

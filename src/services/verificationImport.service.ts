@@ -112,6 +112,66 @@ const isEmailHeading = (h: string) => /email/.test(h) && !/status/.test(h);
 const isStatusHeading = (h: string) => /(zb.*status|status.*zb|^status$|\bstatus\b)/.test(h) && !/sub.?status/.test(h);
 
 /**
+ * ── A heading is a claim; the cells are the evidence ────────────────────────
+ *
+ * The headings alone chose "Assignee Email" + "Lead Status" out of an Instantly campaign
+ * export and reported 0 taken, 201 skipped — confidently, with the pairing printed on
+ * screen as though it were right.
+ *
+ * That file has NINE headings containing "email": email_opened, email_replied,
+ * email_clicked, email_open_count, email_reply_count, email_click_count, Email,
+ * Email Provider, Assignee Email. The real one, plain "Email", was blocked because the
+ * scan rightward for its status hit "Email Provider" — another "email" heading — and gave
+ * up before reaching any status column.
+ *
+ * So the heading tests below are kept as the first filter, and the cells decide. A column
+ * of open-counts holds numbers; "Email Provider" holds "Gmail"; "Assignee Email" holds
+ * nothing at all. None of them survive being looked at.
+ */
+const EMAIL_CELL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+/** Enough of a column to judge it, without reading a whole workbook per candidate. */
+const SAMPLE = 25;
+
+function columnLooksLike(rows: string[][], col: number, test: (v: string) => boolean): boolean {
+  let seen = 0;
+  let hits = 0;
+  for (let r = 1; r < rows.length && seen < SAMPLE; r++) {
+    const v = String(rows[r]?.[col] ?? '').trim();
+    if (!v) continue;
+    seen++;
+    if (test(v)) hits++;
+  }
+  /*
+   * An empty column is not the column, whatever it is called.
+   *
+   * This is the case that produced "0 verdicts would be written": every one of the 201
+   * rows had an empty "Assignee Email". A column holding none of the thing we are looking
+   * for cannot be where that thing is, and treating "no evidence" as "benefit of the
+   * doubt" is exactly how the wrong pair got chosen.
+   */
+  if (!seen) return false;
+  // A majority, not all: a verifier file may carry a blank or a stray note in one row.
+  return hits * 2 >= seen;
+}
+
+/**
+ * The verdicts a verifier actually returns.
+ *
+ * Checked because fixing only the email side is not enough — "Email" would then pair with
+ * "Lead Status", whose values are "Completed | Contacted" and "Completed | Reply
+ * received". Those are campaign states, and importing them would write 201 verdicts that
+ * mean nothing, every one of them counting as undeliverable because no rule recognises
+ * them. Writing a wrong verdict is worse than importing nothing, which is the whole
+ * reason this screen shows a plan before it writes.
+ */
+const KNOWN_STATUSES = new Set([
+  'valid', 'invalid', 'catch-all', 'catchall', 'catch_all', 'unknown',
+  'abuse', 'spamtrap', 'spam_trap', 'do_not_mail', 'donotmail', 'disposable',
+]);
+const isVerdict = (v: string) => KNOWN_STATUSES.has(v.trim().toLowerCase().replace(/\s+/g, '_'));
+
+/**
  * Every email column paired with the status column that follows it.
  *
  * ── Why pairing, and why "the next one to the right" ────────────────────────
@@ -130,19 +190,35 @@ const isStatusHeading = (h: string) => /(zb.*status|status.*zb|^status$|\bstatus
  * verdicts is not a verification result, and guessing a verdict for them is the one thing
  * this must never do.
  */
-export function findColumnPairs(header: string[]): Array<{ emailCol: number; statusCol: number }> {
+export function findColumnPairs(
+  header: string[],
+  /**
+   * The sheet, header row included, when it is available.
+   *
+   * Optional so a caller holding only headings still gets the old behaviour rather than
+   * no answer — but every real import passes the rows, because the headings alone are
+   * what chose the wrong pair.
+   */
+  rows?: string[][],
+): Array<{ emailCol: number; statusCol: number }> {
   const lower = header.map((h) => String(h ?? '').trim().toLowerCase());
   const pairs: Array<{ emailCol: number; statusCol: number }> = [];
   let cursor = 0;
 
+  // Heading first, cells second. Computed once per column rather than per pairing scan.
+  const emailCols = lower.map((h, i) => isEmailHeading(h)
+    && (!rows || columnLooksLike(rows, i, (v) => EMAIL_CELL.test(v))));
+  const statusCols = lower.map((h, i) => isStatusHeading(h)
+    && (!rows || columnLooksLike(rows, i, isVerdict)));
+
   for (let i = 0; i < lower.length; i++) {
-    if (!isEmailHeading(lower[i])) continue;
+    if (!emailCols[i]) continue;
     const from = Math.max(i + 1, cursor);
     let statusCol = -1;
     for (let j = from; j < lower.length; j++) {
       // Stop at the next email column: a status beyond it belongs to that one.
-      if (isEmailHeading(lower[j])) break;
-      if (isStatusHeading(lower[j])) { statusCol = j; break; }
+      if (emailCols[j]) break;
+      if (statusCols[j]) { statusCol = j; break; }
     }
     if (statusCol >= 0) {
       pairs.push({ emailCol: i, statusCol });
@@ -195,7 +271,7 @@ export async function planVerificationImport(input: Buffer | string): Promise<Im
   }
 
   const usable = sheets
-    .map((s) => ({ ...s, pairs: s.rows.length >= 2 ? findColumnPairs(s.rows[0].map((h) => String(h ?? '').trim())) : [] }))
+    .map((s) => ({ ...s, pairs: s.rows.length >= 2 ? findColumnPairs(s.rows[0].map((h) => String(h ?? '').trim()), s.rows) : [] }))
     .filter((s) => s.pairs.length);
 
   if (!usable.length) {
@@ -203,12 +279,34 @@ export async function planVerificationImport(input: Buffer | string): Promise<Im
     // and capped, because an unreadable file's "headings" are whatever the bytes said.
     const biggest = sheets.slice().sort((a, b) => (b.rows[0]?.length ?? 0) - (a.rows[0]?.length ?? 0))[0];
     const headers = (biggest?.rows[0] ?? []).map((h) => String(h ?? '').trim()).filter(Boolean).slice(0, 40);
-    return {
-      ...empty, headers,
-      error: sheets.length > 1
-        ? 'None of the sheets in that workbook has an email column with a status column beside it.'
-        : 'Could not find an email column and a status column in that file.',
-    };
+
+    /**
+     * Say WHICH half is missing.
+     *
+     * "Could not find an email column and a status column" sent somebody looking for a
+     * problem with their addresses, when the file was an Instantly campaign export full
+     * of perfectly good addresses and no verdicts at all — the wrong file, not a wrong
+     * column. The two cases need different things done about them, so they are told
+     * apart here rather than left to be guessed.
+     */
+    const hasAddresses = sheets.some((s) => (s.rows[0] ?? [])
+      .some((_h, i) => s.rows.length >= 2 && columnLooksLike(s.rows, i, (v) => EMAIL_CELL.test(v))));
+    const hasVerdicts = sheets.some((s) => (s.rows[0] ?? [])
+      .some((_h, i) => s.rows.length >= 2 && columnLooksLike(s.rows, i, isVerdict)));
+
+    const where = sheets.length > 1 ? 'that workbook' : 'that file';
+    const error = hasAddresses && !hasVerdicts
+      ? `${where === 'that file' ? 'That file' : 'That workbook'} has email addresses but no verification results `
+        + 'beside them — no column of valid / invalid / catch-all. It looks like a lead export rather than '
+        + 'a verifier result file.'
+      : !hasAddresses && hasVerdicts
+        ? `${where === 'that file' ? 'That file' : 'That workbook'} has verification results but no column of `
+          + 'email addresses to attach them to.'
+        : sheets.length > 1
+          ? 'None of the sheets in that workbook has an email column with a status column beside it.'
+          : 'Could not find an email column and a status column in that file.';
+
+    return { ...empty, headers, error };
   }
 
   /**

@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Container, Box, Typography, Paper, Button, Chip, Table, TableHead, TableRow,
   TableCell, TableBody, CircularProgress, Alert, Stack, Tooltip, TextField,
-  MenuItem, LinearProgress,
+  MenuItem, LinearProgress, TablePagination,
 } from '@mui/material';
 import PhoneIcon from '@mui/icons-material/Phone';
 import DownloadIcon from '@mui/icons-material/Download';
@@ -14,6 +14,9 @@ import Tabs from '@mui/material/Tabs';
 import Tab from '@mui/material/Tab';
 import { useStickyState } from '@/hooks/useStickyState';
 import { stickyFirstColumn, scrollableTable } from '@/lib/stickyColumn';
+// Safe from a client component: services/cohort.ts has no imports at all, so nothing
+// server-only rides in with it — unlike the dashboard service imported type-only below.
+import { numberedCohorts, cohortCode } from '@/services/cohort';
 /**
  * Type-only. The service reads @/lib/neon, and a value import would pull the database
  * client into this bundle — the failure the outreach page documents.
@@ -33,15 +36,32 @@ import type { PhoneDashboard } from '@/services/phoneDashboard.service';
  * Frank will want them, but the table is the product.
  */
 
-const COHORTS: Array<[string, string]> = [
-  ['2026-10-05', 'C1 · 5 Oct'],
-  ['2026-10-12', 'C2 · 12 Oct'],
-  ['2026-10-19', 'C3 · 19 Oct'],
-  ['2026-10-26', 'C4 · 26 Oct'],
-  ['2026-11-02', 'C5 · 2 Nov'],
-  ['2026-11-09', 'C6 · 9 Nov'],
-  ['2026-11-16', 'C7 · 16 Nov'],
-];
+/**
+ * The weeks this screen can filter to, counted forward rather than listed.
+ *
+ * ── Why this is not a list any more ─────────────────────────────────────────
+ * It was seven hand-written lines ending at C7, so C8 — the week of 23 Nov, 702 leads and
+ * the 139 untraced Grade A accounts queued this morning — could not be selected at all.
+ * The data had an eighth week; the dropdown did not, and nothing said so: the screen just
+ * showed C1–C7 as though that were everything.
+ *
+ * This is the third time the same list has stopped short. COHORT_LABEL did it on the
+ * cohort ledger, where C8 rendered as a dash against 165 Grade A leads, and cohort.ts
+ * replaced it with arithmetic for exactly that reason — a cohort is the Monday of a
+ * renewal week, so the numbering is division, and a list can disagree with the data while
+ * arithmetic cannot. This screen kept its own copy and inherited the same ceiling.
+ *
+ * Generated from the same anchor the rest of the system counts from, so the day a C9
+ * appears in the data it appears here too.
+ */
+const COHORTS: Array<[string, string]> = numberedCohorts().map((iso) => {
+  // UTC throughout: a local-time Date shifts the day either side of midnight, which for a
+  // Monday-anchored week puts the label on the wrong one.
+  const d = new Date(`${iso}T00:00:00Z`);
+  const day = d.getUTCDate();
+  const month = d.toLocaleString('en-GB', { month: 'short', timeZone: 'UTC' });
+  return [iso, `${cohortCode(iso)} · ${day} ${month}`];
+});
 
 const STATUSES: Array<[string, string]> = [
   ['all', 'Any status'],
@@ -64,6 +84,46 @@ export default function PhoneDashboardPage() {
   /** Defaults to the call-first list, because that is what this page is for. */
   const [reach, setReach] = useStickyState('phone:reach', 'unverified');
   const [status, setStatus] = useStickyState('phone:status', 'all');
+  /** Grade A is the priced book and the default; Grade B is a different conversation. */
+  const [grade, setGrade] = useStickyState('phone:grade', 'A');
+
+  /*
+   * ── Paging ────────────────────────────────────────────────────────────────
+   *
+   * Both tables were cut off at 300 rows with nothing said. On Grade A that was almost
+   * never reached so nobody noticed; Grade B puts 645 accounts in the call-first list and
+   * 345 of them simply were not on the page. A silent truncation is worse than a short
+   * page — Ruben had no way to know the list continued.
+   *
+   * Rows per page is sticky and the page number is not: which slice of a list you were
+   * looking at yesterday means nothing today, but how much you like to see at once does.
+   */
+  const [queuePage, setQueuePage] = useState(0);
+  const [queueRpp, setQueueRpp] = useStickyState('phone:queueRpp', 50);
+  const [coPage, setCoPage] = useState(0);
+  const [coRpp, setCoRpp] = useStickyState('phone:coRpp', 25);
+
+  /*
+   * Back to the first page whenever the list underneath changes.
+   *
+   * Without this, switching from Grade B (645 rows) to Grade A (495) while on page 12
+   * leaves you somewhere arbitrary in a list you have not seen. safePage below still
+   * clamps, so the table is never empty either way — this decides WHERE you land, and
+   * the top of a list you just asked for is the only defensible answer.
+   *
+   * Adjusted during render rather than in an effect. React sanctions this for exactly
+   * this case: it re-runs the component immediately with the corrected state, before
+   * anything paints, so there is no flash of the wrong page and no second render pass
+   * for the browser to show. An effect would set state after the paint, which is both a
+   * visible flicker and what react-hooks/set-state-in-effect is warning about.
+   */
+  const filterKey = `${cohortFrom}|${cohortTo}|${reach}|${status}|${grade}`;
+  const [pagedFor, setPagedFor] = useState(filterKey);
+  if (pagedFor !== filterKey) {
+    setPagedFor(filterKey);
+    setQueuePage(0);
+    setCoPage(0);
+  }
 
   /**
    * ── Only the newest request is allowed to paint ──────────────────────────
@@ -90,6 +150,7 @@ export default function PhoneDashboardPage() {
       u.searchParams.set('cohortTo', cohortTo);
       u.searchParams.set('reach', reach);
       u.searchParams.set('status', status);
+    u.searchParams.set('grade', grade);
       const j = await (await fetch(u.toString())).json();
       // A newer request has been sent since this one left. Its answer is the one that
       // matches what is on screen, so this reply is discarded rather than painted.
@@ -102,9 +163,57 @@ export default function PhoneDashboardPage() {
     } finally {
       if (mine === wanted.current) setLoading(false);
     }
-  }, [cohortFrom, cohortTo, reach, status]);
+  }, [cohortFrom, cohortTo, reach, status, grade]);
 
   useEffect(() => { load(); }, [load]);
+
+  /**
+   * One pager, used by both tables, rendered above and below each (Frank, Jun 2026).
+   *
+   * `safePage` rather than the raw page number: the row count under a table changes
+   * whenever a filter does, and a page that no longer exists renders an empty table that
+   * looks like a failed load rather than a paging accident. Clamping is cheap insurance
+   * the reset effect alone does not give — that effect fires on filter changes, while
+   * this also covers a list shrinking under a reload.
+   *
+   * "All" is offered because this page feeds a phone session: Ruben works down a list and
+   * a pager that forces him to find his place again every 50 cards is a worse tool than
+   * one long scroll. It is not the default, because 645 rows of tooltips is slow to paint.
+   */
+  const pagerFor = (
+    total: number, page: number, rpp: number,
+    setPage: (n: number) => void, setRpp: (n: number) => void,
+  ) => {
+    const effRpp = rpp === -1 ? Math.max(total, 1) : rpp;
+    const maxPage = Math.max(0, Math.ceil(total / effRpp) - 1);
+    const safePage = Math.min(page, maxPage);
+    const from = total === 0 ? 0 : safePage * effRpp + 1;
+    const to = Math.min((safePage + 1) * effRpp, total);
+    return {
+      safePage,
+      slice: <T,>(rows: T[]) => rows.slice(safePage * effRpp, safePage * effRpp + effRpp),
+      node: (where: 'top' | 'bottom') => (
+        <TablePagination
+          key={where}
+          component="div"
+          rowsPerPageOptions={[25, 50, 100, 250, { label: 'All', value: -1 }]}
+          count={total}
+          rowsPerPage={rpp}
+          page={safePage}
+          onPageChange={(_e, p) => setPage(p)}
+          onRowsPerPageChange={(e) => { setRpp(parseInt(e.target.value, 10)); setPage(0); }}
+          labelDisplayedRows={() => `${from}–${to} of ${total}`}
+          showFirstButton
+          showLastButton
+          sx={{
+            '.MuiTablePagination-toolbar': {
+              flexWrap: 'wrap', justifyContent: 'flex-end', rowGap: 0.5, minHeight: 44,
+            },
+          }}
+        />
+      ),
+    };
+  };
 
   const exportCsv = () => {
     if (!data) return;
@@ -149,8 +258,11 @@ export default function PhoneDashboardPage() {
         <Typography variant="h5" sx={{ fontWeight: 800 }}>Phone outreach</Typography>
       </Stack>
       <Typography variant="body2" sx={{ color: '#5a6675', mb: 2 }}>
-        Who to ring next, and how far through the list we are. Rated accounts only — an
-        unrated one has no band price to talk about.
+        {grade === 'B'
+          ? 'Who to ring next, and how far through the list we are. Grade B has no band price, '
+            + 'so this list is the accounts we hold a number for — not the whole grade.'
+          : 'Who to ring next, and how far through the list we are. Rated accounts only — an '
+            + 'unrated one has no band price to talk about.'}
       </Typography>
 
       <Tabs
@@ -206,6 +318,12 @@ export default function PhoneDashboardPage() {
       {/* ── Filters ── */}
       <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
         <Stack direction="row" spacing={1.5} sx={{ flexWrap: 'wrap', gap: 1.5, alignItems: 'center' }}>
+          <TextField select size="small" label="Grade" value={grade}
+            onChange={(e) => setGrade(e.target.value)} sx={{ minWidth: 190 }}
+            helperText={grade === 'B' ? 'No band price on these' : 'Priced accounts'}>
+            <MenuItem value="A">Grade A — rated</MenuItem>
+            <MenuItem value="B">Grade B — no band price</MenuItem>
+          </TextField>
           <TextField select size="small" label="From week" value={cohortFrom}
             onChange={(e) => setCohortFrom(e.target.value)} sx={{ minWidth: 150 }}>
             {COHORTS.map(([v, l]) => <MenuItem key={v} value={v}>{l}</MenuItem>)}
@@ -219,7 +337,7 @@ export default function PhoneDashboardPage() {
             helperText="Who email cannot reach is who the phone is for">
             <MenuItem value="unverified">No verified email — call first</MenuItem>
             <MenuItem value="verified">Has a verified email</MenuItem>
-            <MenuItem value="all">Everyone rated</MenuItem>
+            <MenuItem value="all">{grade === 'B' ? 'Everyone with a number' : 'Everyone rated'}</MenuItem>
           </TextField>
           <TextField select size="small" label="Call status" value={status}
             onChange={(e) => setStatus(e.target.value)} sx={{ minWidth: 170 }}>
@@ -247,7 +365,7 @@ export default function PhoneDashboardPage() {
           {!data.verificationRun && (
             <Alert severity="info" sx={{ mb: 2 }}>
               No email verification has been imported yet, so nothing counts as verified and
-              every rated account appears in the call-first list. These numbers become
+              every {grade === 'B' ? 'Grade B' : 'rated'} account appears in the call-first list. These numbers become
               meaningful once the ZeroBounce results are in.
             </Alert>
           )}
@@ -255,8 +373,14 @@ export default function PhoneDashboardPage() {
           {/* ── Frank's three numbers ── */}
           <Stack direction="row" spacing={2} sx={{ mb: 2, flexWrap: 'wrap', gap: 2 }}>
             {[
-              { label: 'Rated accounts', value: data.rated,
-                help: 'Grade A with a producer-entered premium, in the selected weeks.' },
+              {
+                label: grade === 'B' ? 'Accounts with a number' : 'Rated accounts',
+                value: data.rated,
+                help: grade === 'B'
+                  ? 'Grade B leads we hold at least one number for, in the selected weeks. '
+                    + 'Grade B has no band price, so a number on the card is what puts an account in this list.'
+                  : 'Grade A with a producer-entered premium, in the selected weeks.',
+              },
               { label: 'Verified email', value: data.verifiedEmail,
                 help: 'An insured address a verifier confirmed exists. Email can reach these.' },
               { label: 'No verified email', value: data.nonVerified,
@@ -298,7 +422,7 @@ export default function PhoneDashboardPage() {
             <Table size="small" sx={stickyFirstColumn}>
               <TableHead>
                 <TableRow>
-                  {['Week', 'Rated', 'Verified email', 'To call', 'Called', 'Reached', 'No numbers'].map((h) => (
+                  {['Week', grade === 'B' ? 'With a number' : 'Rated', 'Verified email', 'To call', 'Called', 'Reached', 'No numbers'].map((h) => (
                     <TableCell key={h} sx={{ fontWeight: 700, fontSize: 12 }}
                       align={h === 'Week' ? 'left' : 'right'}>{h}</TableCell>
                   ))}
@@ -331,6 +455,8 @@ export default function PhoneDashboardPage() {
                 — never called first, then most live numbers, then soonest renewal
               </Box>
             </Typography>
+            {(() => { const pg = pagerFor(data.queue.length, queuePage, queueRpp, setQueuePage, setQueueRpp); return (<>
+            {pg.node('top')}
             {/* The call list is the widest table on the screen. Same treatment: it scrolls
                 on its own, and the renewal week stays pinned so Ruben can read across a row
                 without losing which one he is on. */}
@@ -343,7 +469,11 @@ export default function PhoneDashboardPage() {
                     ['Owner', 'Click through to the card to dial and log.'],
                     ['Address', ''],
                     ['Renews', 'Sooner renewals are more urgent.'],
-                    ['Premium', 'What the producer rated it at.'],
+                    // Blank on every Grade B row, because no Grade B lead carries a band
+                    // price. Said here rather than left to look like missing data.
+                    ['Premium', grade === 'B'
+                      ? 'Empty on Grade B — these have no band price, which is most of what keeps them out of Grade A.'
+                      : 'What the producer rated it at.'],
                     ['Numbers', 'Callable / total on the card. The gap is do-not-call flags.'],
                     ['Status', 'What the last call that reached somebody produced.'],
                     ['Attempts', ''],
@@ -359,7 +489,7 @@ export default function PhoneDashboardPage() {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {data.queue.slice(0, 300).map((q) => (
+                {pg.slice(data.queue).map((q) => (
                   <TableRow key={q.propertyId} hover>
                     <TableCell>{q.cohortLabel}</TableCell>
                     <TableCell>
@@ -451,11 +581,8 @@ export default function PhoneDashboardPage() {
               </TableBody>
             </Table>
             </Box>
-            {data.queue.length > 300 && (
-              <Typography variant="caption" sx={{ color: '#5a6675', mt: 1, display: 'block' }}>
-                Showing the first 300 of {data.queue.length}. Export for the rest.
-              </Typography>
-            )}
+            {pg.node('bottom')}
+            </>); })()}
           </Paper>
 
           {/*
@@ -491,6 +618,7 @@ export default function PhoneDashboardPage() {
               Number(b.insuredLive === 0) - Number(a.insuredLive === 0)
               || Number(a.coInsuredAttempts > 0) - Number(b.coInsuredAttempts > 0)
               || b.coInsuredLive - a.coInsuredLive);
+            const coPg = pagerFor(rows.length, coPage, coRpp, setCoPage, setCoRpp);
 
             return (
               <Paper variant="outlined" sx={{ p: 2, mt: 2 }}>
@@ -521,6 +649,7 @@ export default function PhoneDashboardPage() {
                   ))}
                 </Stack>
 
+                {coPg.node('top')}
                 <Box sx={scrollableTable}>
                   <Table size="small">
                     <TableHead>
@@ -532,7 +661,7 @@ export default function PhoneDashboardPage() {
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {rows.slice(0, 300).map((q) => (
+                      {coPg.slice(rows).map((q) => (
                         <TableRow key={q.propertyId} hover>
                           <TableCell sx={{ fontSize: 12 }}>{q.cohortLabel}</TableCell>
                           <TableCell sx={{ fontSize: 12 }}>
@@ -569,11 +698,7 @@ export default function PhoneDashboardPage() {
                     </TableBody>
                   </Table>
                 </Box>
-                {rows.length > 300 && (
-                  <Typography variant="caption" sx={{ color: '#5a6675', mt: 1, display: 'block' }}>
-                    Showing the first 300 of {rows.length}. Export for the rest.
-                  </Typography>
-                )}
+                {coPg.node('bottom')}
               </Paper>
             );
           })()}
