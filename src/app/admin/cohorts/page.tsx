@@ -3,13 +3,15 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Container, Box, Typography, Paper, Button, Chip, Table, TableHead, TableRow,
-  TableCell, TableBody, CircularProgress, Alert, Stack, TextField, Tabs, Tab,
+  TableCell, TableBody, CircularProgress, Alert, Stack, TextField, Tabs, Tab, Tooltip,
 } from '@mui/material';
 import SwapVertIcon from '@mui/icons-material/SwapVert';
 import DownloadIcon from '@mui/icons-material/Download';
 import { useStickyState } from '@/hooks/useStickyState';
 import { LEDGER_COLUMNS, type LedgerRow } from '@/components/ledgerColumns';
 import { stickyFirstColumn, scrollableTable } from '@/lib/stickyColumn';
+// Zero imports in that file, so a client component can read it safely.
+import { cohortCode } from '@/services/cohort';
 
 /**
  * The cohort ledgers, on their own screen.
@@ -52,6 +54,7 @@ type GradeBRow = {
   cohort: string; code: string | null; label: string; total: number; inBand: number;
   queued: number; traced: number; withEmail: number; verified: number; failed: number;
   mailable: number; noContact: number;
+  coWithEmail: number; coVerified: number; coOnly: number;
 };
 
 /**
@@ -226,7 +229,18 @@ export default function CohortsPage() {
       {!loading && rows.length > 0 && shownGrade === 'B' && (
         /* The Grade A ledger beside this one already scrolled; this one did not, which only
            went unnoticed because Grade A is the tab that opens by default. */
-        <Paper variant="outlined" sx={scrollableTable}>
+        <Paper variant="outlined">
+          {/* Named for the same reason as the Grade A ledger: there is a co-insured table
+              underneath it now, and an untitled table beside a named one reads as the whole
+              of which the other is a part. Outside the scroll box so it cannot slide away. */}
+          <Box sx={{ px: 2, pt: 2, pb: 1 }}>
+            <Typography sx={{ fontWeight: 700, fontSize: 15 }}>The insured</Typography>
+            <Typography variant="caption" sx={{ color: '#5a6675', display: 'block' }}>
+              The person named on the policy. Has an address, Verified, Refused and Mailable
+              all count their addresses only.
+            </Typography>
+          </Box>
+          <Box sx={scrollableTable}>
           <Table size="small" sx={stickyFirstColumn}>
             <TableHead>
               <TableRow>
@@ -263,6 +277,7 @@ export default function CohortsPage() {
               ))}
             </TableBody>
           </Table>
+          </Box>
           <Box sx={{ p: 1.5 }}>
             <Typography variant="caption" sx={{ display: 'block', color: '#5a6675' }}>
               Grade B → in the roof band (homes 21–76, roof unconfirmed) → queued for the
@@ -278,7 +293,23 @@ export default function CohortsPage() {
       )}
 
       {!loading && rows.length > 0 && shownGrade === 'A' && (
-        <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
+        <Paper variant="outlined">
+          {/*
+            Named, because there is now a co-insured table underneath it.
+
+            Untitled it read as "the ledger"; beside a table called The co-insured it has
+            to say which person it counts, or the pair looks like a whole and a part. The
+            heading sits OUTSIDE the scrolling box — the table is twenty-odd columns wide
+            and a title that slides away as you scroll right is worse than none.
+          */}
+          <Box sx={{ px: 2, pt: 2, pb: 1 }}>
+            <Typography sx={{ fontWeight: 700, fontSize: 15 }}>The insured</Typography>
+            <Typography variant="caption" sx={{ color: '#5a6675', display: 'block' }}>
+              The person named on the policy — who email 1 of every cadence is written to.
+              Mailable and Verified below count their addresses only.
+            </Typography>
+          </Box>
+          <Box sx={{ overflowX: 'auto' }}>
           {/*
             Driven by LEDGER_COLUMNS, the same list the QC screen used.
 
@@ -321,6 +352,7 @@ export default function CohortsPage() {
               ))}
             </TableBody>
           </Table>
+          </Box>
           <Box sx={{ p: 1.5 }}>
             <Typography variant="caption" sx={{ display: 'block', color: '#5a6675' }}>
               Grade A at pull → downgraded → low point → regained Grade A → Grade A now →
@@ -336,6 +368,111 @@ export default function CohortsPage() {
           </Box>
         </Paper>
       )}
+
+      {/*
+        ── The co-insured, counted on its own (Abdullah, 9 Oct 2026) ───────────
+
+        The ledger above reports the INSURED — insuredEmails() excludes everything
+        belonging to the second person, so the co-insured had no number on this screen at
+        all. There is no table for the insured here because the ledger already is one.
+
+        It is not a fallback audience: it is mailed in its own right, with its own subject
+        line and ask, and its verification sheets already come back split by role. The
+        first thing it shows is the gap — C4 onward hold 488 co-insured addresses between
+        them and one is confirmed, which is invisible while only the insured is reported.
+      */}
+      {!loading && rows.length > 0 && (() => {
+        /*
+         * One table, both tabs.
+         *
+         * The two ledgers name the same figure differently — the Grade A row calls it
+         * coMailable, the Grade B row coWithEmail — so it is read through one accessor
+         * rather than branching the whole table. Everything below is identical for both,
+         * because the question is.
+         */
+        type CoRow = { cohort: string; coVerified: number; coOnly: number };
+        const holds = (r: CoRow) => (r as unknown as { coMailable?: number; coWithEmail?: number }).coMailable
+          ?? (r as unknown as { coWithEmail?: number }).coWithEmail ?? 0;
+        const weeks = (rows as unknown as CoRow[]).filter((r) => holds(r) > 0);
+        if (!weeks.length) return null;
+        const sum = (f: (r: CoRow) => number) => weeks.reduce((a, r) => a + f(r), 0);
+        const pct = (n: number, d: number) => (d ? `${Math.round((n / d) * 100)}%` : '—');
+        const held = sum(holds);
+        const ok = sum((r) => r.coVerified);
+
+        const cell = (n: number, sx: object = {}) => (
+          <TableCell align="right" sx={sx}>{n || <span style={{ color: '#c2c7d0' }}>—</span>}</TableCell>
+        );
+
+        return (
+          <Paper variant="outlined" sx={{ mt: 2 }}>
+            {/* Heading outside the scrolling box, same as The insured above it, so the
+                pair reads as a pair at any window width. */}
+            <Box sx={{ px: 2, pt: 2, pb: 1 }}>
+              <Typography sx={{ fontWeight: 700, fontSize: 15 }}>The co-insured</Typography>
+              <Typography variant="caption" sx={{ color: '#5a6675', display: 'block' }}>
+                The spouse or co-owner on the policy, mailed in their own right with their own
+                subject line and ask. The ledger above counts the insured only, so these
+                accounts appear nowhere else.
+              </Typography>
+            </Box>
+            <Box sx={{ overflowX: 'auto', px: 2, pb: 2 }}>
+            <Table size="small" sx={stickyFirstColumn}>
+              <TableHead>
+                <TableRow>
+                  {[
+                    ['Week', ''],
+                    ['Hold an address', 'We have an email address for the co-insured.'],
+                    ['Confirmed', 'A verifier said that address exists.'],
+                    ['Confirmed %', 'Of the addresses we hold for them, how many are confirmed.'],
+                    ['Not confirmed', 'We hold an address but nobody has checked it, or it failed.'],
+                    [
+                      'Insured has none',
+                      'The co-insured is confirmed and the insured is not — so the spouse’s address is '
+                      + 'the only confirmed email on the account. Mail only the insured and these are never reached.',
+                    ],
+                  ].map(([h, help], i) => (
+                    <TableCell key={h} align={i === 0 ? 'left' : 'right'} sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}>
+                      {help ? (
+                        <Tooltip arrow title={help}>
+                          <span style={{ cursor: 'help', borderBottom: '1px dotted #b9c0cc' }}>{h}</span>
+                        </Tooltip>
+                      ) : h}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {weeks.map((r) => (
+                  <TableRow key={r.cohort} hover>
+                    <TableCell sx={{ whiteSpace: 'nowrap' }}>{cohortCode(r.cohort) ?? r.cohort}</TableCell>
+                    {cell(holds(r))}
+                    {cell(r.coVerified, { color: r.coVerified ? '#1b6b2f' : undefined, fontWeight: r.coVerified ? 700 : 400 })}
+                    {/* Never a dash: nought confirmed out of a hundred held is the finding. */}
+                    <TableCell align="right" sx={{
+                      color: r.coVerified ? '#5a6675' : '#b3261e',
+                      fontWeight: r.coVerified ? 400 : 700,
+                    }}>
+                      {pct(r.coVerified, holds(r))}
+                    </TableCell>
+                    {cell(holds(r) - r.coVerified)}
+                    {cell(r.coOnly, { color: r.coOnly ? '#8a5a00' : undefined, fontWeight: r.coOnly ? 700 : 400 })}
+                  </TableRow>
+                ))}
+                <TableRow>
+                  <TableCell sx={{ fontWeight: 700 }}>All</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700 }}>{held}</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700 }}>{ok}</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700 }}>{pct(ok, held)}</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700 }}>{held - ok}</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700 }}>{sum((r) => r.coOnly)}</TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+            </Box>
+          </Paper>
+        );
+      })()}
     </Container>
   );
 }

@@ -296,25 +296,40 @@ export async function getOutreachDashboard(params: {
    * a campaign"; the event rows say who was written to, when, and what came back, which
    * is the only thing a delivery or engagement rate can honestly be built from.
    */
+  /**
+   * ── Grade A only, because the rung above it is ────────────────────────────
+   *
+   * `loaded` is declared `of: 'with_email'`, so it renders as a percentage of a Grade A
+   * rung — but it counted every lead with an outreach event, whatever its grade. On C1
+   * that was 160 against 62 Grade A worked, a subset larger than the set it is drawn
+   * from, and the same mismatch ran down every rung below it.
+   *
+   * The Grade B sends are real and correctly recorded; they simply are not part of a
+   * Grade A funnel. Reporting them here made both numbers unusable rather than either
+   * one informative.
+   */
   const [ev] = await sql`
     SELECT
-      COUNT(DISTINCT "leadId")                                      FILTER (WHERE TRUE)                       AS loaded,
-      COUNT(DISTINCT "recipientEmail")                              FILTER (WHERE "sentAt" IS NOT NULL)       AS emailed,
+      -- Recipients, not cards. See the unit note above the rung below.
+      COUNT(DISTINCT o."recipientEmail")                            FILTER (WHERE TRUE)                       AS loaded,
+      COUNT(DISTINCT o."recipientEmail")                            FILTER (WHERE o."sentAt" IS NOT NULL)     AS emailed,
       -- Observed where the platform reports it, derived as "sent and not bounced" where it
       -- does not — which is every message today, because the platform has no delivery
       -- event at all. See the delivered rung's note below.
-      COUNT(DISTINCT "recipientEmail")                              FILTER (WHERE "deliveredAt" IS NOT NULL
-                                                                            OR ("sentAt" IS NOT NULL
-                                                                            AND "bouncedAt" IS NULL)) AS delivered,
-      COUNT(DISTINCT "recipientEmail")                              FILTER (WHERE "repliedAt" IS NOT NULL
-                                                                            OR "clickedAt" IS NOT NULL)       AS engaged,
+      COUNT(DISTINCT o."recipientEmail")                            FILTER (WHERE o."deliveredAt" IS NOT NULL
+                                                                            OR (o."sentAt" IS NOT NULL
+                                                                            AND o."bouncedAt" IS NULL)) AS delivered,
+      COUNT(DISTINCT o."recipientEmail")                            FILTER (WHERE o."repliedAt" IS NOT NULL
+                                                                            OR o."clickedAt" IS NOT NULL)     AS engaged,
       -- Bounces, complaints and unsubscribes are deliberately NOT counted here: they are
       -- playbook §08 metrics with enforced thresholds, and this screen quotes the service
       -- that owns them rather than deriving a second, softer copy.
-      COUNT(*) FILTER (WHERE "sentAt" IS NOT NULL)::int                                                       AS sends
-      FROM "OutreachEvent"
-     WHERE (${effFrom ?? null}::text IS NULL OR "cohort" >= ${effFrom ?? null})
-       AND (${effTo ?? null}::text   IS NULL OR "cohort" <= ${effTo ?? null})` as Array<Record<string, unknown>>;
+      COUNT(*) FILTER (WHERE o."sentAt" IS NOT NULL)::int                                                     AS sends
+      FROM "OutreachEvent" o
+      JOIN "Lead" l ON l."id" = o."leadId"
+     WHERE COALESCE(l."manualGrade", l."grade") = 'A'
+       AND (${effFrom ?? null}::text IS NULL OR o."cohort" >= ${effFrom ?? null})
+       AND (${effTo ?? null}::text   IS NULL OR o."cohort" <= ${effTo ?? null})` as Array<Record<string, unknown>>;
 
   const n = (v: unknown) => Number(v ?? 0);
   const loaded = n(ev?.loaded);
@@ -382,9 +397,27 @@ export async function getOutreachDashboard(params: {
           + 'Import a result file under Verification.',
     },
     {
-      key: 'loaded', label: 'Loaded to campaign', count: loaded, of: 'with_email',
+      /**
+       * ── The rung where cards become people ──────────────────────────────
+       *
+       * Everything above counts CARDS; everything from here down counts RECIPIENTS, and
+       * the two are not the same because the co-insured is mailed in their own right. On
+       * C1, 55 Grade A cards carry 103 addresses — 86 insured and 27 co-insured.
+       *
+       * This counted cards while "People emailed" below it counted addresses, and
+       * divided one into the other: C1 read 55 loaded and 74 emailed, a rate of 135%.
+       * Counting recipients here puts the whole lower funnel in one unit, and the rate
+       * against `with_email` becomes the honest "how many people are we reaching per
+       * emailable card", which is above 100% by design and says so.
+       *
+       * The label carries the unit, because a number whose unit changes mid-column is
+       * only readable if the column admits it.
+       */
+      key: 'loaded', label: 'Recipients loaded to campaign', count: loaded, of: 'with_email',
       rate: pct(loaded, withEmail), target: 100, floor: null, started: loaded > 0,
-      note: 'Every emailable card should be in the sequence.',
+      note: 'Addresses in the sequence, not cards — the insured and the co-insured are '
+        + 'each a recipient, so this runs above the card count wherever a co-insured is '
+        + 'being mailed. Every emailable card should be represented.',
     },
     {
       key: 'emailed', label: 'People emailed (E1)', count: emailed, of: 'loaded',
@@ -571,14 +604,51 @@ export async function getOutreachDashboard(params: {
     byCohortMap.set(key, c);
   }
 
+  /*
+   * ── Delivered, derived here exactly as the funnel above derives it ────────
+   *
+   * This read `deliveredAt IS NOT NULL` on its own while the funnel twenty lines up
+   * already fell back to "sent and not bounced". The platform emits no delivery event at
+   * all — deliveredAt has never been written on any row, ever — so this column was zero
+   * for every week on the screen while the funnel above it reported a real number. Two
+   * definitions of one word on one page, and the per-week one could only ever read nil.
+   *
+   * Same expression, same meaning, and it still prefers a real deliveredAt if the
+   * platform ever starts sending one.
+   */
+  /**
+   * ── Grade A only, because every column to the left of these already is ────
+   *
+   * This counted every lead with an outreach event, whatever its grade, while Grade A at
+   * pull, kept, worked and with-insured-email beside it count Grade A. One row, two
+   * populations, read as a funnel: C1 showed 62 worked and 160 loaded, which cannot
+   * happen if loaded is a subset. The extra were the Grade B sends — 105 on C1, 125 on
+   * C2, 116 on C3 — real sends, correctly recorded, on the wrong row.
+   *
+   * Four Grade D leads on C2 and seven on C7 were also sitting in here, which is a
+   * separate question about how they reached a campaign at all.
+   *
+   * Grade B outreach is not lost by this; it is simply not reported inside a Grade A
+   * ladder. If it needs its own numbers it needs its own table, the way the co-insured
+   * did — counting it here only ever made both numbers unusable.
+   *
+   * COALESCE(manualGrade, grade) is the same test every other screen grades by, so a
+   * producer's override is honoured here too.
+   */
   const perCohortEvents = await sql`
-    SELECT "cohort",
-           COUNT(DISTINCT "leadId")                                                   AS loaded,
-           COUNT(DISTINCT "recipientEmail") FILTER (WHERE "sentAt" IS NOT NULL)        AS emailed,
-           COUNT(DISTINCT "recipientEmail") FILTER (WHERE "deliveredAt" IS NOT NULL)   AS delivered,
-           COUNT(DISTINCT "recipientEmail") FILTER (WHERE "repliedAt" IS NOT NULL
-                                                      OR "clickedAt" IS NOT NULL)      AS engaged
-      FROM "OutreachEvent" WHERE "cohort" IS NOT NULL GROUP BY "cohort"` as Array<Record<string, unknown>>;
+    SELECT o."cohort",
+           COUNT(DISTINCT o."recipientEmail")                                           AS loaded,
+           COUNT(DISTINCT o."recipientEmail") FILTER (WHERE o."sentAt" IS NOT NULL)      AS emailed,
+           COUNT(DISTINCT o."recipientEmail") FILTER (WHERE o."deliveredAt" IS NOT NULL
+                                                        OR (o."sentAt" IS NOT NULL
+                                                        AND o."bouncedAt" IS NULL))      AS delivered,
+           COUNT(DISTINCT o."recipientEmail") FILTER (WHERE o."repliedAt" IS NOT NULL
+                                                        OR o."clickedAt" IS NOT NULL)    AS engaged
+      FROM "OutreachEvent" o
+      JOIN "Lead" l ON l."id" = o."leadId"
+     WHERE o."cohort" IS NOT NULL
+       AND COALESCE(l."manualGrade", l."grade") = 'A'
+     GROUP BY o."cohort"` as Array<Record<string, unknown>>;
   for (const e of perCohortEvents) {
     const c = byCohortMap.get(String(e.cohort));
     if (!c) continue;
@@ -646,7 +716,23 @@ export async function getOutreachDashboard(params: {
     excluded,
     funnel,
     guardrails,
-    byCohort: [...byCohortMap.values()].sort((a, b) => (a.cohort < b.cohort ? -1 : 1)),
+    /**
+     * A week with nothing in any column is not reported.
+     *
+     * Three weeks — 23 Mar, 30 Mar and 20 Apr 2026 — hold 3, 2 and 1 leads between them
+     * and not one Grade A. They appeared as full rows of zeros: the table named a renewal
+     * week and then had nothing to say about it, which reads as a week that failed rather
+     * than a week this screen does not cover.
+     *
+     * Every column is tested, not just Grade A at pull. C8 has none at pull but 159
+     * upgraded in, and a week whose only figure is a single loaded recipient is still a
+     * week something happened in. A row is dropped only when the answer to every
+     * question on it is zero.
+     */
+    byCohort: [...byCohortMap.values()]
+      .filter((c) => c.atPull || c.kept || c.gained || c.worked || c.withEmail
+        || c.loaded || c.emailed || c.delivered || c.engaged || c.quoted || c.bound)
+      .sort((a, b) => (a.cohort < b.cohort ? -1 : 1)),
     outreachStarted,
     generatedAt: new Date().toISOString(),
   };

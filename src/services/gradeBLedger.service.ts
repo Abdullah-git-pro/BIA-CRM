@@ -50,6 +50,21 @@ export type GradeBLedgerRow = {
   mailable: number;
   /** Nothing for the insured and nothing for the co-insured: the post, or nothing. */
   noContact: number;
+  /*
+   * ── The co-insured, counted rather than only consulted ───────────────────
+   *
+   * coInsuredEmails() was already read here, but only to decide noContact — the second
+   * person could keep a lead out of 'no contact at all' and still have no number of
+   * their own anywhere. The same blind spot the Grade A ledger had.
+   *
+   * Counted over every Grade B lead in the week, exactly like withEmail and verified
+   * above, so the columns describe one population. Scoping these to the roof band alone
+   * would put two different denominators in one row.
+   */
+  coWithEmail: number;
+  coVerified: number;
+  /** Confirmed for the co-insured and not the insured: the only confirmed way in. */
+  coOnly: number;
 };
 
 export async function getGradeBLedger(params: {
@@ -108,6 +123,7 @@ export async function getGradeBLedger(params: {
         endsOn: cohortEnd(cohort),
         total: 0, inBand: 0, queued: 0, traced: 0,
         withEmail: 0, verified: 0, failed: 0, mailable: 0, noContact: 0,
+        coWithEmail: 0, coVerified: 0, coOnly: 0,
       };
       by.set(cohort, r);
     }
@@ -124,9 +140,23 @@ export async function getGradeBLedger(params: {
     const ins = insuredEmails(l).map(norm);
     const co = coInsuredEmails(l).map(norm);
 
+    /*
+     * Tallied BEFORE the insured branch below, which only runs when there is an insured
+     * address. A lead whose only confirmed address belongs to the co-insured is exactly
+     * what coOnly is for, and it would be skipped there.
+     */
+    const insConfirmed = ins.some((e) => deliverable.has(e));
+    if (co.length) {
+      r.coWithEmail++;
+      if (co.some((e) => deliverable.has(e))) {
+        r.coVerified++;
+        if (!insConfirmed) r.coOnly++;
+      }
+    }
+
     if (ins.length) {
       r.withEmail++;
-      if (ins.some((e) => deliverable.has(e))) r.verified++;
+      if (insConfirmed) r.verified++;
       /**
        * Counted as failed only when EVERY insured address was refused. One bad address
        * beside a good one is not a lead we cannot mail — and reporting it as such would

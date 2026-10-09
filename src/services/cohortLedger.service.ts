@@ -2,7 +2,7 @@ import { sql } from '@/lib/neon';
 import { deliverableAddresses } from './emailVerification.service';
 import { cohortLabel, cohortEnd, cohortOf } from './cohort';
 import { LOST_TARGET_PCT } from '@/lib/targets';
-import { insuredEmails, assertRecipientCols } from './recipients.service';
+import { insuredEmails, coInsuredEmails, assertRecipientCols } from './recipients.service';
 import { contactabilityOf, householdReach } from './contactability.service';
 
 /**
@@ -117,6 +117,11 @@ export type CohortLedgerRow = {
    * ledger already records one row up, for aNow against mailable.
    */
   verified: number;
+  /** The co-insured programme, counted on its own — see the tally in getCohortLedger. */
+  coMailable: number;
+  coVerified: number;
+  /** Confirmed on the co-insured and not on the insured: the only way in. */
+  coOnly: number;
   /**
    * Mailable, but the address failed verification or has not been checked. The call-first
    * list.
@@ -320,6 +325,31 @@ export async function getCohortLedger(
 
   const mailableByCohort = new Map<string, number>();
   const verifiedByCohort = new Map<string, number>();
+
+  /**
+   * ── The co-insured, counted separately because it is a separate programme ──
+   *
+   * `verified` above is the INSURED only — insuredEmails() excludes everything belonging
+   * to the second person. That was never a mix; the co-insured simply was not counted
+   * anywhere on this screen.
+   *
+   * It needs to be, because the co-insured is mailed in its own right: 77 sends to 77
+   * co-insured addresses, 414 leads carrying their own co-insured subject line and CTA
+   * arm, and verification sheets that already split by role (C1 36, C2 46, C3 16 against
+   * 202, 213 and 193 insured). Two programmes, one of which had no numbers.
+   *
+   * What it immediately shows is the gap: C4 onward have no co-insured verification at
+   * all, which is invisible while only the insured is reported.
+   *
+   * Counted in the same pass as the insured, over the same rows, so the two can never
+   * describe different populations — the mistake `mailable` and `verified` were written
+   * to avoid one row up.
+   */
+  const coHoldByCohort = new Map<string, number>();
+  const coVerifiedByCohort = new Map<string, number>();
+  /** Verified on the co-insured and NOT on the insured: the only confirmed way in. */
+  const coOnlyByCohort = new Map<string, number>();
+  const bump = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) ?? 0) + 1);
   /** Loaded once. A lookup per lead across thousands of leads is a query per lead. */
   const deliverable = await deliverableAddresses();
 
@@ -358,6 +388,23 @@ export async function getCohortLedger(
         // way left. A co-insured number keeps the lead in the call queue instead.
         if (householdReach(r) === 'none') t.directMailOnly++;
     }
+    /*
+     * The co-insured tally sits ABOVE the insured `continue` below.
+     *
+     * That line skips any lead with no insured address — and a lead whose only confirmed
+     * address belongs to the co-insured is exactly the case this is meant to surface.
+     * Counting after it would drop the rows that matter most.
+     */
+    const coAddresses = coInsuredEmails(r);
+    const insuredVerified = insuredEmails(r).some((e) => deliverable.has(String(e).trim().toLowerCase()));
+    if (coAddresses.length) {
+      bump(coHoldByCohort, r.cohort);
+      if (coAddresses.some((e) => deliverable.has(String(e).trim().toLowerCase()))) {
+        bump(coVerifiedByCohort, r.cohort);
+        if (!insuredVerified) bump(coOnlyByCohort, r.cohort);
+      }
+    }
+
     if (insuredEmails(r).length === 0) continue;
     mailableByCohort.set(r.cohort, (mailableByCohort.get(r.cohort) ?? 0) + 1);
     /**
@@ -413,6 +460,9 @@ export async function getCohortLedger(
       mailable: mailableByCohort.get(r.cohort) ?? 0,
       verified: verifiedByCohort.get(r.cohort) ?? 0,
       unverified: (mailableByCohort.get(r.cohort) ?? 0) - (verifiedByCohort.get(r.cohort) ?? 0),
+      coMailable: coHoldByCohort.get(r.cohort) ?? 0,
+      coVerified: coVerifiedByCohort.get(r.cohort) ?? 0,
+      coOnly: coOnlyByCohort.get(r.cohort) ?? 0,
       emailAndPhone: contactByCohort.get(r.cohort)?.emailAndPhone ?? 0,
       emailOnly: contactByCohort.get(r.cohort)?.emailOnly ?? 0,
       phoneOnly: contactByCohort.get(r.cohort)?.phoneOnly ?? 0,

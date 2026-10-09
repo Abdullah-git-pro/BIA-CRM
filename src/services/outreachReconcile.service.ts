@@ -286,11 +286,26 @@ export async function reconcileOutreach(opts?: {
        * the gap.
        */
       if (!ev) {
+        /*
+         * The cohort and propertyId come back with the match, because the row written
+         * below has to carry them.
+         *
+         * It did not, and nothing noticed for a fortnight: 1,918 of 2,104 outreach events
+         * were written here with a null cohort and a null propertyId, which took them out
+         * of the Outreach screen's by-week table entirely. It showed 47 leads loaded on C1
+         * against a true 160, and no row at all for C4 onward. personRole carries
+         * DEFAULT 'insured', so every one of them also claimed to be a send to the
+         * insured — including the co-insured's addresses.
+         */
         const [match] = await sql`
-          SELECT "id" FROM "Lead"
+          SELECT "id", "propertyId", "cohort",
+                 (lower("owner2Email") = ${email}
+                  AND lower(COALESCE("email1", '')) <> ${email}
+                  AND lower(COALESCE("email2", '')) <> ${email}) AS is_co_insured
+            FROM "Lead"
            WHERE lower("email1") = ${email} OR lower("email2") = ${email}
               OR lower("owner2Email") = ${email}
-           LIMIT 1` as Array<{ id: string }>;
+           LIMIT 1` as Array<{ id: string; propertyId: string | null; cohort: string | null; is_co_insured: boolean }>;
 
         if (!match) {
           out.unknown++;
@@ -309,9 +324,13 @@ export async function reconcileOutreach(opts?: {
            */
           await sql`
             INSERT INTO "OutreachEvent"
-              ("id","leadId","recipientEmail","channel","vendorLeadId","vendorCampaignId",
-               "sentAt","createdAt","updatedAt")
-            VALUES (${crypto.randomUUID()}, ${match.id}, ${email}, 'campaign',
+              ("id","leadId","propertyId","cohort","personRole","recipientEmail","channel",
+               "vendorLeadId","vendorCampaignId","sentAt","createdAt","updatedAt")
+            VALUES (${crypto.randomUUID()}, ${match.id}, ${match.propertyId ?? null},
+                    ${match.cohort ?? null},
+                    -- Written, not left to the column default, which is 'insured'.
+                    ${match.is_co_insured ? 'coinsured' : 'insured'},
+                    ${email}, 'campaign',
                     ${v.id ?? null}, ${campaignId}, NULL, NOW(), NOW())`;
         }
         out.registered++;

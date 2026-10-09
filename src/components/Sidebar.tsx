@@ -94,36 +94,16 @@ export default function Sidebar({ collapsed, onToggle, mobileOpen = false, onMob
        * First in the admin group, because it is the only screen that answers 'what should
        * I do next' rather than 'what is true'. Everything below it is a report.
        */
-      { label: 'To do',       icon: <PlaylistAddCheckIcon />, path: '/admin/workflow' },
-      { label: 'Campaigns',   icon: <CampaignIcon />,        path: '/lead-campaigns' },
       /**
-       * Indented under Campaigns, because neither is a place anybody goes on its own — one
-       * holds the values the copy uses and the other answers "why hasn't this gone out",
-       * and both questions start from a campaign. Shown as siblings they read as two more
-       * top-level areas of the CRM, which is three things to scan instead of one.
-       *
-       * Collapsible, at the cost noted below: a group that starts closed is a group whose
-       * contents somebody has to already know about. It therefore starts OPEN and remembers
-       * what you last chose, so closing it is a decision rather than a default that quietly
-       * anybody who has not already found it.
+       * First in the admin group, because it is the only screen that answers 'what should
+       * I do next' rather than 'what is true'. Everything below it is a report.
        */
-      { label: 'Email variables', icon: <DataObjectIcon />, path: '/admin/merge-variables', child: true, parent: '/lead-campaigns' },
-      { label: 'Subject lines', icon: <DataObjectIcon />, path: '/admin/subjects', child: true, parent: '/lead-campaigns' },
-      { label: 'CTAs', icon: <CampaignIcon />, path: '/admin/ctas', child: true, parent: '/lead-campaigns' },
-      { label: 'Campaign copy', icon: <DataObjectIcon />, path: '/admin/campaign-copy', child: true, parent: '/lead-campaigns' },
-      { label: 'Can we send?', icon: <FactCheckIcon />, path: '/admin/send-check', child: true, parent: '/lead-campaigns' },
-      // Its own entry, above QC. QC is where somebody goes when they suspect a problem;
-      // the ledger is the standing measure of the pipeline and the first thing Frank reads.
+      { label: 'To do',       icon: <PlaylistAddCheckIcon />, path: '/admin/workflow' },
+      // Above QC. QC is where somebody goes when they suspect a problem; the ledger is the
+      // standing measure of the pipeline and the first thing Frank reads.
       { label: 'Cohorts',     icon: <SwapVertIcon />,        path: '/admin/cohorts' },
       { label: 'QC Reports',  icon: <AssessmentIcon />,      path: '/admin/qc' },
       { label: 'Outreach',    icon: <InsightsIcon />,        path: '/admin/outreach' },
-      // Its own entry rather than a tab inside Outreach: this one is a work queue somebody
-      // opens to find the next call, not a report they open to read numbers.
-      { label: 'Phone',       icon: <PhoneIcon />,           path: '/admin/phone' },
-      // Under Phone, because it answers the question the queue cannot: how much of the
-      // cohort has actually been dialled. On 1 Oct C1 held 326 numbers with 15 worked and
-      // nothing in the CRM said so — Frank asked twice and nobody could answer.
-      { label: 'Call coverage', icon: <FactCheckIcon />, path: '/admin/call-coverage', child: true, parent: '/admin/phone' },
       { label: 'Weekly Pull', icon: <EventRepeatIcon />,     path: '/admin/pull-weekly' },
       // Its own entry because Zoya opens it, and she does not otherwise come to QC Reports.
       // Burying a file upload inside a reporting screen is how it goes on being done by
@@ -136,6 +116,41 @@ export default function Sidebar({ collapsed, onToggle, mobileOpen = false, onMob
        * about — a queue nobody can find is a queue nobody clears.
        */
       { label: 'Name check',  icon: <PersonSearchIcon />,     path: '/admin/name-review' },
+
+      /**
+       * ── The two groups that expand, kept last (Abdullah, 9 Oct 2026) ─────────
+       *
+       * Campaigns and Phone are the only entries with children, and open they add six
+       * rows between Users and Cohorts — so the reports underneath moved depending on
+       * what somebody had expanded, and the list had no stable shape to learn.
+       *
+       * At the bottom they can grow without pushing anything, and the flat reports above
+       * stay where they were last time. Order between them is unchanged.
+       */
+      { label: 'Campaigns',   icon: <CampaignIcon />,        path: '/lead-campaigns' },
+      /**
+       * Indented under Campaigns, because neither is a place anybody goes on its own — one
+       * holds the values the copy uses and the other answers "why hasn't this gone out",
+       * and both questions start from a campaign. Shown as siblings they read as two more
+       * top-level areas of the CRM, which is three things to scan instead of one.
+       *
+       * Collapsible, at the cost noted below: a group that starts closed is a group whose
+       * contents somebody has to already know about. It therefore starts OPEN and remembers
+       * what you last chose, so closing it is a decision rather than a default that quietly
+       * hides it from anybody who has not already found it.
+       */
+      { label: 'Email variables', icon: <DataObjectIcon />, path: '/admin/merge-variables', child: true, parent: '/lead-campaigns' },
+      { label: 'Subject lines', icon: <DataObjectIcon />, path: '/admin/subjects', child: true, parent: '/lead-campaigns' },
+      { label: 'CTAs', icon: <CampaignIcon />, path: '/admin/ctas', child: true, parent: '/lead-campaigns' },
+      { label: 'Campaign copy', icon: <DataObjectIcon />, path: '/admin/campaign-copy', child: true, parent: '/lead-campaigns' },
+      { label: 'Can we send?', icon: <FactCheckIcon />, path: '/admin/send-check', child: true, parent: '/lead-campaigns' },
+      // Its own entry rather than a tab inside Outreach: this one is a work queue somebody
+      // opens to find the next call, not a report they open to read numbers.
+      { label: 'Phone',       icon: <PhoneIcon />,           path: '/admin/phone' },
+      // Under Phone, because it answers the question the queue cannot: how much of the
+      // cohort has actually been dialled. On 1 Oct C1 held 326 numbers with 15 worked and
+      // nothing in the CRM said so — Frank asked twice and nobody could answer.
+      { label: 'Call coverage', icon: <FactCheckIcon />, path: '/admin/call-coverage', child: true, parent: '/admin/phone' },
     ] : []),
   ];
 
