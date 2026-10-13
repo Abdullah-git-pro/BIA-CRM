@@ -219,8 +219,22 @@ export function numbersOnCard(lead: Record<string, unknown>): Array<{
   const isMobile = (t: string | null) => /mobile|cell|wireless/i.test(String(t ?? ''));
   const rankOf = (n: { rank: number | null; label: string }) =>
     (n.rank ?? (CARD_LABELS.has(n.label) ? 0 : 99));
+  /*
+   * ── Landlines go last, above only the do-not-call ones ──────────────────
+   *
+   * Line type used to be the fourth tiebreak, below the vendor's rank. On its own that
+   * ordering is nearly right — rank and mobile correlate so closely that promoting type
+   * above rank changes the first number on only 4 of 563 cards. But it left landlines
+   * interleaved through the list rather than at the end of it, and a landline is 87%
+   * dead against a mobile's 44%.
+   *
+   * So it is a demotion rather than a reshuffle: everything else keeps its order, and
+   * fixed lines sink beneath it. Untyped numbers stay where rank puts them, because a
+   * missing type is not evidence of anything.
+   */
   out.sort((x, y) =>
     Number(x.dnc) - Number(y.dnc)
+    || Number(isLandline(x.type)) - Number(isLandline(y.type))
     || (x.role === y.role ? 0 : x.role === 'insured' ? -1 : 1)
     || rankOf(x) - rankOf(y)
     || Number(!isMobile(x.type)) - Number(!isMobile(y.type))
@@ -288,12 +302,46 @@ export function liveNumbersOnCard(lead: Record<string, unknown>): ReturnType<typ
    * that happened to come out at zero: an account whose every number is ranked deep is
    * still an account with numbers, and it must never read as nothing left to ring.
    */
-  const current = live.filter((n) => !isDeepTail(n.rank));
-  return current.length ? current : live;
+  /**
+   * ── Landlines are held back too (Tracerfy, 12 Oct 2026) ─────────────────
+   *
+   * Their data team reviewed our call log and found landlines failing far worse than
+   * mobiles. Checked against our own record rather than taken on trust, and they are
+   * right almost to the point:
+   *
+   *     mobile      111 calls   44% bad number or wrong person   7 people reached
+   *     landline    147 calls   87%                              1 person reached
+   *     unknown      56 calls   54%                              5 people reached
+   *
+   * They predicted 42% and 87%. One person reached in 147 landline calls is the number
+   * that decides it — a mobile is roughly ten times likelier to put Ruben in front of
+   * somebody.
+   *
+   * An untyped number is NOT treated as a landline. 63 cards carry no line type at all,
+   * and 54% dead puts the untyped group nearer the mobiles than the landlines; guessing
+   * against them would bury numbers on the evidence of a missing field.
+   *
+   * ── The ladder, rather than one filter ──────────────────────────────────
+   * Both tests at once would empty the 53 cards whose every live number is a landline.
+   * So it steps down: the good numbers, then allow landlines, then everything live. A
+   * card can lose quality but never lose its last number.
+   */
+  const best = live.filter((n) => !isDeepTail(n.rank) && !isLandline(n.type));
+  if (best.length) return best;
+  const allowLandlines = live.filter((n) => !isDeepTail(n.rank));
+  return allowLandlines.length ? allowLandlines : live;
 }
 
 /** The first rank at which a number stops counting towards "worth ringing". */
 export const DEEP_TAIL_RANK = 7;
+
+/**
+ * A number the vendor says is fixed-line.
+ *
+ * Deliberately not "anything that is not a mobile": `type` is absent on a good many
+ * numbers, and absent is not the same as landline.
+ */
+const isLandline = (type: string | null): boolean => /land|fixed/i.test(String(type ?? ''));
 
 /** Live numbers held back as a reserve because they sit deep in the vendor's ranking. */
 export function reserveNumbersOnCard(lead: Record<string, unknown>): ReturnType<typeof numbersOnCard> {

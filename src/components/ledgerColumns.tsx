@@ -175,6 +175,52 @@ export const LEDGER_COLUMNS: LedgerColumn[] = [
   },
   {
     /**
+     * Did anyone read it — the question the ledger could not answer.
+     *
+     * Everything to the left of this says whether we CAN reach the week. This is the
+     * first column that says whether reaching them did anything, and it is the number
+     * Frank has asked for per cohort three times; until now it existed only on the
+     * campaigns screen, broken down per campaign rather than per renewal week.
+     *
+     * ── What it does not cover ──────────────────────────────────────────────
+     * Counted from our own send records, which hold 44 of the 70 opens the platform
+     * knows about — the gap is addresses mailed with no send record on our side. And
+     * five completed campaigns ran with open tracking switched off, so their weeks show
+     * fewer opens than really happened. The tooltip says both, because a number that
+     * undercounts silently is worse than one that admits it.
+     */
+    header: 'Opened',
+    value: (d) => (d.emailed > 0 ? String(d.opened) : ''),
+    numeric: true,
+    cell: (d) => {
+      if (!d.emailed) {
+        return (
+          <Tooltip arrow title="Nothing has been emailed for this week yet.">
+            <span style={{ cursor: 'help', color: '#9aa4b2' }}>—</span>
+          </Tooltip>
+        );
+      }
+      const share = d.opened / d.emailed;
+      return (
+        <Tooltip
+          arrow
+          title={`${d.opened} of the ${d.emailed} addresses mailed in this week opened at least once. `
+            + 'Counted per person, not per open. Undercounts: some sends have no record on our side, '
+            + 'and the campaigns that ran before 7 Oct had open tracking switched off, so their opens '
+            + 'were never recorded at all.'}
+        >
+          <span style={{ cursor: 'help' }}>
+            <strong style={{ color: d.opened ? '#1b6b2f' : '#9aa4b2' }}>{d.opened}</strong>
+            <Typography component="span" variant="caption" sx={{ color: '#8a94a6', ml: 0.5 }}>
+              {`· ${Math.round(share * 100)}%`}
+            </Typography>
+          </span>
+        </Tooltip>
+      );
+    },
+  },
+  {
+    /**
      * The call-first list, as a number. Frank: "Non-verified = 72 ... We call these first
      * and as soon as ready."
      *

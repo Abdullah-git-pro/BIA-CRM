@@ -54,6 +54,7 @@ type GradeBRow = {
   cohort: string; code: string | null; label: string; total: number; inBand: number;
   queued: number; traced: number; withEmail: number; verified: number; failed: number;
   mailable: number; noContact: number;
+  emailed: number; opened: number;
   coWithEmail: number; coVerified: number; coOnly: number;
 };
 
@@ -245,7 +246,7 @@ export default function CohortsPage() {
             <TableHead>
               <TableRow>
                 {['Cohort', 'Renewal week', 'Grade B', 'In the roof band', 'Queued', 'Traced',
-                  'Has an address', 'Verified', 'Refused', 'Mailable', 'No contact at all']
+                  'Has an address', 'Verified', 'Refused', 'Mailable', 'Emailed', 'Opened', 'No contact at all']
                   .map((h, i) => (
                     <TableCell key={h} align={i > 1 ? 'right' : 'left'} sx={{ fontWeight: 700 }}>{h}</TableCell>
                   ))}
@@ -272,6 +273,16 @@ export default function CohortsPage() {
                     {r.failed || <span style={{ color: '#c2c7d0' }}>—</span>}
                   </TableCell>
                   <TableCell align="right" sx={{ fontWeight: 700 }}>{num(r.mailable)}</TableCell>
+                  <TableCell align="right">{r.emailed || <span style={{ color: '#c2c7d0' }}>—</span>}</TableCell>
+                  {/* Nought opened out of a hundred mailed is a finding; nought mailed is not. */}
+                  <TableCell align="right" sx={{
+                    color: r.emailed && !r.opened ? '#b3261e' : r.opened ? '#1b6b2f' : undefined,
+                    fontWeight: r.opened || (r.emailed && !r.opened) ? 700 : 400,
+                  }}>
+                    {r.emailed
+                      ? <>{r.opened}<span style={{ color: '#8a94a6', fontWeight: 400, fontSize: 11 }}>{' '}· {Math.round(r.opened / r.emailed * 100)}%</span></>
+                      : <span style={{ color: '#c2c7d0' }}>—</span>}
+                  </TableCell>
                   <TableCell align="right" sx={{ color: '#8a5a00' }}>{num(r.noContact)}</TableCell>
                 </TableRow>
               ))}

@@ -118,6 +118,18 @@ export type CohortLedgerRow = {
    */
   verified: number;
   /** The co-insured programme, counted on its own — see the tally in getCohortLedger. */
+  /**
+   * Emails actually sent, and how many were opened, for this week.
+   *
+   * The ledger stopped at 'can we reach them' and never said whether anyone read it —
+   * which is the question Frank keeps asking per cohort, and the one number that lived
+   * only on the campaigns screen, broken down the wrong way.
+   *
+   * Counted per ADDRESS, like everything else here, and only where open tracking was
+   * actually on: a campaign that recorded nothing would otherwise drag a week to zero.
+   */
+  emailed: number;
+  opened: number;
   coMailable: number;
   coVerified: number;
   /** Confirmed on the co-insured and not on the insured: the only way in. */
@@ -419,6 +431,47 @@ export async function getCohortLedger(
     }
   }
 
+  /**
+   * What was sent and opened, per week.
+   *
+   * Read from OutreachEvent rather than the platform, so the ledger stays a single
+   * database query and does not hang on fifteen vendor calls. The cost is coverage: the
+   * CRM holds 44 of the 70 opens the platform knows about, the gap being addresses that
+   * were mailed with no send record on our side. The column says so rather than
+   * pretending to be complete.
+   */
+  /*
+   * ── Grade A only, because every other column on this row is ──────────────
+   *
+   * Without the join this counted every send in the week whatever its grade, and C1 read
+   * 48 mailable against 181 emailed — more mail than there were addresses to send it to.
+   * The Grade B sends are real and belong on the Grade B ledger, which has its own
+   * version of this column; here they only made the row impossible.
+   *
+   * Same mistake the outreach ladder made, one screen over, found the same way: a
+   * subset larger than the set it is drawn from.
+   */
+  const engagementRows = await sql`
+    SELECT o."cohort",
+           COUNT(DISTINCT o."leadId") FILTER (WHERE o."sentAt" IS NOT NULL)::int AS emailed,
+           COUNT(DISTINCT o."leadId") FILTER (WHERE o."openedAt" IS NOT NULL)::int AS opened
+      FROM "OutreachEvent" o
+      JOIN "Lead" l ON l."id" = o."leadId"
+     WHERE o."cohort" IS NOT NULL
+       AND COALESCE(l."manualGrade", l."grade") = 'A'
+       -- CARDS, not addresses, and insured ones only — because every other figure on this
+       -- row is a card. Frank mails every verified address the insured has, so 48 mailable
+       -- cards produced 63 sent addresses and the row read as more mail than there was
+       -- anywhere to send it from.
+       -- Insured only, because the mailable column beside it counts cards that have an
+       -- insured email. Counting the co-insured here too put more mail on the row than
+       -- there were cards to send it from — C1 read 48 mailable against 74 emailed. The
+       -- co-insured has its own table underneath, which is where their sends belong.
+       AND o."personRole" = 'insured'
+     GROUP BY o."cohort"` as Array<Record<string, unknown>>;
+  const engagementByCohort = new Map(engagementRows.map((r) => [String(r.cohort),
+    { emailed: Number(r.emailed ?? 0), opened: Number(r.opened ?? 0) }]));
+
   const clusters = await sql`
     SELECT "cohort", "addressCounty" AS county, COUNT(*)::int n
       FROM "Lead"
@@ -460,6 +513,8 @@ export async function getCohortLedger(
       mailable: mailableByCohort.get(r.cohort) ?? 0,
       verified: verifiedByCohort.get(r.cohort) ?? 0,
       unverified: (mailableByCohort.get(r.cohort) ?? 0) - (verifiedByCohort.get(r.cohort) ?? 0),
+      emailed: engagementByCohort.get(r.cohort)?.emailed ?? 0,
+      opened: engagementByCohort.get(r.cohort)?.opened ?? 0,
       coMailable: coHoldByCohort.get(r.cohort) ?? 0,
       coVerified: coVerifiedByCohort.get(r.cohort) ?? 0,
       coOnly: coOnlyByCohort.get(r.cohort) ?? 0,

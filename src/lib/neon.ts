@@ -12,6 +12,34 @@ import { neon, Pool, neonConfig } from '@neondatabase/serverless';
 
 neonConfig.fetchConnectionCache = true;
 
+/**
+ * ── A connect timeout long enough to reach us-east-1 from outside it ───────
+ *
+ * undici defaults to a 10s connect timeout. On Vercel that is enormous — the function
+ * runs in the same AWS region as the database and connects in single-digit milliseconds.
+ * From a developer machine it is marginal: measured with a bare fetch and no application
+ * code in the way, the first connection to the Neon host took 8,731ms, and subsequent
+ * ones 1.1–2.6s. Right on the boundary, which is why local pages 500 while the same
+ * code serves Live without trouble.
+ *
+ * The retry made it worse rather than better. Three attempts each waiting the full 10s
+ * meant a developer watched a page hang for 33–41 seconds and then fail, when one
+ * patient attempt would have succeeded.
+ *
+ * 30s applies everywhere, because it costs nothing where connects are fast: a timeout is
+ * a ceiling, not a delay. Deployed, nothing changes. Locally, the first request after an
+ * idle period waits instead of failing.
+ *
+ * Set via a custom fetch rather than a global undici dispatcher so it cannot alter the
+ * timeouts of every other outbound call in the process — the vendor clients have their
+ * own deadlines and should keep them.
+ */
+const CONNECT_TIMEOUT_MS = 30_000;
+neonConfig.fetchFunction = (input: RequestInfo | URL, init?: RequestInit) => fetch(input, {
+  ...init,
+  signal: init?.signal ?? AbortSignal.timeout(CONNECT_TIMEOUT_MS),
+});
+
 // Tagged-template client (used for static queries in storage.service.ts)
 const globalForNeon = globalThis as unknown as {
   sql: ReturnType<typeof neon> | undefined;

@@ -26,6 +26,14 @@ import { readVendorJson } from './vendorErrors';
 // name on file cannot be traced at all now that the address-based lookup is gone. Callers
 // must gate on the name being present rather than letting this throw.
 const ENHANCED_URL = 'https://tracerfy.com/v1/api/trace/enhanced/lookup/';
+/**
+ * The 5-credit name-scoped lookup, used ONLY as the co-insured fallback below.
+ *
+ * Not a replacement for the enhanced tier: it returns no relatives block, which is where
+ * three quarters of our co-insured contacts come from. Measured side by side on 30 leads,
+ * swapping to it wholesale would have lost the co-insured on 14 of every 30.
+ */
+const LOOKUP_URL = 'https://tracerfy.com/v1/api/trace/lookup/';
 
 export interface TracerfyResult {
   phones: string[];
@@ -112,6 +120,75 @@ export async function runTracerfy(
     json = await callEnhanced(firstToken);
   }
   const rawPersons: any[] = Array.isArray(json?.persons) ? json.persons : [];
+
+  /**
+   * ── Second call for a co-insured the enhanced trace did not return ───────
+   *
+   * Tracerfy's own suggestion (Jorge, 13 Oct 2026) and measured before adopting.
+   *
+   * Enhanced finds the named co-insured on 1,035 of 1,380 traced cards — 75%. On the
+   * 345 it misses, a NAME-SCOPED lookup recovered them on 40 of 87 tried, and 40 of the
+   * 41 people it returned were the right person: 97% precision. That sample gained 176
+   * numbers, 81 of them mobile, and 59 addresses, for 205 credits — about 5 credits per
+   * co-insured found.
+   *
+   * ── Why find_owner must be false ────────────────────────────────────────
+   * It defaults to TRUE, which makes the endpoint address-scoped: it returns whoever has
+   * lived at the property and ignores the name sent with it. Our first comparison missed
+   * this and measured 29% unrelated people as a result. With it off the endpoint answers
+   * the question actually asked — "this person, at this address".
+   *
+   * ── Why this is safe to run automatically ───────────────────────────────
+   * A miss bills nothing, so the cost is bounded by the successes. It only fires when the
+   * card already names a second person AND the enhanced payload does not contain them,
+   * so it cannot run on a card with no co-insured or duplicate work already done.
+   */
+  /** Only the fields this block reads — enough to avoid an any, honest about the rest. */
+  type NamedPerson = { first_name?: string; firstName?: string; last_name?: string; lastName?: string;
+    relatives?: NamedPerson[] };
+  const coFirst = String(l.owner2FirstName ?? '').trim();
+  const coLast = String(l.owner2LastName ?? '').trim();
+  const nameKey = (v: unknown) => String(v ?? '').toLowerCase().replace(/[^a-z]/g, '');
+  const wantsCo = coFirst && coLast
+    // A co-insured slot holding the insured's own name is not a second person — the same
+    // guard every other co-insured rule applies.
+    && !(nameKey(coFirst) === nameKey(first) && nameKey(coLast) === nameKey(last));
+
+  if (wantsCo) {
+    const want = nameKey(coFirst) + nameKey(coLast);
+    const already = rawPersons.some((p) => [p, ...(Array.isArray(p?.relatives) ? p.relatives : [])]
+      .some((y: NamedPerson) => nameKey(y?.first_name ?? y?.firstName) + nameKey(y?.last_name ?? y?.lastName) === want));
+
+    if (!already) {
+      requests++;
+      try {
+        const res = await fetch(LOOKUP_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+          body: JSON.stringify({
+            address, city, state, zip,
+            find_owner: false, first_name: coFirst, last_name: coLast,
+          }),
+          signal: AbortSignal.timeout(30000),
+        });
+        const co = await readVendorJson('Tracerfy', res) as { persons?: NamedPerson[] } | null;
+        /*
+         * Only the person we asked for is taken.
+         *
+         * Even name-scoped the endpoint can return a near miss, and 1 of the 41 it
+         * returned in testing was somebody else. Appending whatever came back is how a
+         * stranger's numbers end up on a card labelled with the co-insured's name.
+         */
+        for (const p of (Array.isArray(co?.persons) ? co.persons : []) as NamedPerson[]) {
+          if (nameKey(p?.first_name) + nameKey(p?.last_name) === want) rawPersons.push(p);
+        }
+      } catch {
+        // The fallback is a bonus, never a reason to lose the enhanced result that
+        // already succeeded. A failure here leaves the trace exactly as it was.
+      }
+    }
+  }
+
   const persons = rawPersons.map(toReapiPerson);
 
   // Insured first — same ordering rule as the old provider.

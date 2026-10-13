@@ -266,10 +266,41 @@ export default function SkipTraceDialog({ open, onClose, data, tracedAt, onFile 
                     <Stack spacing={0.5} sx={{ mb: 1.5 }}>
                       {emails.map((em, j) => {
                         const addr = typeof em === 'string' ? em : em?.email;
+                        /*
+                         * ── What the vendor says about the address, not just the address ──
+                         *
+                         * The phones above carry type, carrier, DNC, TCPA and rank. The
+                         * emails were rendered as a bare mailto link, so `verified` and
+                         * `rank` were read out of the payload by nothing and shown nowhere
+                         * — on a screen whose whole job is to say what we know about a
+                         * contact.
+                         *
+                         * It matters more than it looks. "Which of these is really the
+                         * insured's" is the open question behind a 6.4% open rate and 148
+                         * addresses mailed that failed the surname check, and `verified` is
+                         * the only thing the vendor offers towards answering it.
+                         *
+                         * Coverage is partial and growing — none in August, 9% of emails
+                         * traced in September, 25% in October — so absent is genuinely
+                         * "not stated" and is left blank rather than shown as a failure.
+                         */
+                        const verified = typeof em === 'string' ? undefined : em?.verified;
+                        const rank = typeof em === 'string' ? undefined : em?.rank;
                         return (
-                          <Stack key={j} direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+                          <Stack key={j} direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
                             <EmailIcon fontSize="small" color="action" />
                             <Link href={`mailto:${addr}`}>{addr}</Link>
+                            {verified === true && (
+                              <Chip size="small" color="success" label="verified"
+                                title="Tracerfy confirmed this address. Not the same as a mailbox check — it says the address is theirs, not that it is live." />
+                            )}
+                            {verified === false && (
+                              <Chip size="small" variant="outlined" color="warning" label="not verified"
+                                title="Tracerfy returned this address but could not confirm it." />
+                            )}
+                            {rank != null && (
+                              <Typography variant="caption" color="text.secondary">rank {rank}</Typography>
+                            )}
                           </Stack>
                         );
                       })}
@@ -310,8 +341,18 @@ export default function SkipTraceDialog({ open, onClose, data, tracedAt, onFile 
                                     {fmtPhone(ph.number)}
                                   </Link>
                                 ))}
+                                {/* Same marking as the person's own addresses above — a
+                                    relative's verified address is how a co-insured is
+                                    reached on many of these cards. */}
                                 {remails.map((em, j) => (
-                                  <Link key={`e${j}`} href={`mailto:${em.email}`} sx={{ fontSize: 12 }}>{em.email}</Link>
+                                  <Stack key={`e${j}`} direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
+                                    <Link href={`mailto:${em.email}`} sx={{ fontSize: 12 }}>{em.email}</Link>
+                                    {em.verified === true && (
+                                      <Chip size="small" color="success" label="verified"
+                                        sx={{ height: 18, fontSize: 10 }}
+                                        title="Tracerfy confirmed this address belongs to them." />
+                                    )}
+                                  </Stack>
                                 ))}
                               </Stack>
                             </Box>

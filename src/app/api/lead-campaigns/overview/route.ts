@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { listCampaigns, getAllCampaignAnalytics, getLeadCountsByCampaign, CAMPAIGN_STATUS } from '@/lib/integrations/leadCampaign';
+import { listCampaigns, getCampaign, getAllCampaignAnalytics, getLeadCountsByCampaign, CAMPAIGN_STATUS } from '@/lib/integrations/leadCampaign';
 import { requireCampaignAccess, vendorError } from '@/lib/integrations/campaignAccess';
 
 /**
@@ -23,6 +23,30 @@ export async function GET(request: NextRequest) {
       getLeadCountsByCampaign(),
     ]);
     const byId = new Map(analytics.map((a) => [a.campaign_id, a]));
+
+    /**
+     * ── Whether the campaign was even counting opens ───────────────────────
+     *
+     * A campaign with open tracking off reports 0 opens and a 0% rate, which is
+     * indistinguishable on this screen from a campaign nobody opened. Five completed
+     * campaigns and 928 sends read as total failures for that reason, and the blended
+     * figure quoted from this list understated the real open rate by a third.
+     *
+     * The list endpoint does not return the flag — it comes back only on the individual
+     * campaign — so each one is fetched. Fifteen small calls against a 6,000/min budget,
+     * and the alternative is a screen that cannot tell nought from unmeasured.
+     */
+    const tracking = new Map<string, boolean | null>();
+    await Promise.all(campaigns.map(async (c) => {
+      try {
+        const full = await getCampaign(c.id);
+        tracking.set(c.id, full.open_tracking ?? null);
+      } catch {
+        // One campaign failing to load its settings must not empty the whole list —
+        // null renders as "unknown", which is what it is.
+        tracking.set(c.id, null);
+      }
+    }));
 
     const data = campaigns.map((c) => {
       const a = byId.get(c.id);
@@ -80,7 +104,15 @@ export async function GET(request: NextRequest) {
         totalClicks: a?.link_click_count ?? 0,
         bounced: a?.bounced_count ?? 0,
         unsubscribed: a?.unsubscribed_count ?? 0,
-        openRate: rate(a?.open_count_unique),
+        /*
+         * Null, not zero, when the campaign was not tracking.
+         *
+         * Zero is a measurement. A campaign with tracking off made no measurement, and
+         * the screen has to be able to say so rather than publish a nought somebody will
+         * average into a total.
+         */
+        openTracking: tracking.get(c.id) ?? null,
+        openRate: tracking.get(c.id) === false ? null : rate(a?.open_count_unique),
         replyRate: rate(a?.reply_count_unique),
         // A bounce is already one per recipient, so there is no unique variant to prefer.
         bounceRate: rate(a?.bounced_count),

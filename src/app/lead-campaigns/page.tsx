@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Container, Box, Typography, Paper, Tabs, Tab, Table, TableHead, TableRow, TableCell,
-  TableBody, Chip, CircularProgress, Alert, Stack, Button, LinearProgress,
+  TableBody, Chip, CircularProgress, Alert, Stack, Button, LinearProgress, Tooltip,
 } from '@mui/material';
 import CampaignIcon from '@mui/icons-material/Campaign';
 import MarkEmailReadIcon from '@mui/icons-material/MarkEmailRead';
@@ -39,6 +39,14 @@ type CampaignRow = {
   totalOpens?: number; totalReplies?: number; totalClicks?: number;
   bounced: number; unsubscribed: number;
   openRate: number | null; replyRate: number | null; bounceRate: number | null;
+  /**
+   * Whether the campaign was counting opens at all. Null when the platform did not say.
+   *
+   * Without it a campaign that never measured is indistinguishable from one nobody
+   * opened — both render '0  0%'. Five completed campaigns and 928 sends read as total
+   * failures for exactly that reason.
+   */
+  openTracking?: boolean | null;
 };
 
 type MailboxRow = {
@@ -189,7 +197,17 @@ export default function LeadCampaignsPage() {
                     </TableCell>
                     <TableCell sx={{ fontVariantNumeric: 'tabular-nums' }}>{c.sent.toLocaleString()}</TableCell>
                     <TableCell sx={{ fontVariantNumeric: 'tabular-nums' }}>
-                      {c.opens.toLocaleString()} <span style={{ color: '#8a94a6', fontSize: 12 }}>{pct(c.openRate)}</span>
+                      {c.openTracking === false ? (
+                        <Tooltip arrow title={'Open tracking was switched off for this campaign, so nothing was counted. '
+                          + 'This is not a nought — the opens may have happened and cannot now be recovered.'}>
+                          <span style={{ color: '#8a5a00', cursor: 'help', borderBottom: '1px dotted #c8a44a' }}>not tracked</span>
+                        </Tooltip>
+                      ) : (
+                        <>
+                          {c.opens.toLocaleString()}{' '}
+                          <span style={{ color: '#8a94a6', fontSize: 12 }}>{pct(c.openRate)}</span>
+                        </>
+                      )}
                     </TableCell>
                     <TableCell sx={{ fontVariantNumeric: 'tabular-nums' }}>
                       {c.replies.toLocaleString()} <span style={{ color: '#8a94a6', fontSize: 12 }}>{pct(c.replyRate)}</span>

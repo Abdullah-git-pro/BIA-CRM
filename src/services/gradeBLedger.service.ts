@@ -61,6 +61,15 @@ export type GradeBLedgerRow = {
    * above, so the columns describe one population. Scoping these to the roof band alone
    * would put two different denominators in one row.
    */
+  /**
+   * Emails sent for this week, and how many were opened — Grade B only.
+   *
+   * The ladder ended at 'mailable', which says whether we COULD write to them. For a
+   * book with no band price the email is the only thing that starts a conversation, so
+   * whether anyone read it is the measure that matters most here, not least.
+   */
+  emailed: number;
+  opened: number;
   coWithEmail: number;
   coVerified: number;
   /** Confirmed for the co-insured and not the insured: the only confirmed way in. */
@@ -123,6 +132,7 @@ export async function getGradeBLedger(params: {
         endsOn: cohortEnd(cohort),
         total: 0, inBand: 0, queued: 0, traced: 0,
         withEmail: 0, verified: 0, failed: 0, mailable: 0, noContact: 0,
+        emailed: 0, opened: 0,
         coWithEmail: 0, coVerified: 0, coOnly: 0,
       };
       by.set(cohort, r);
@@ -168,6 +178,38 @@ export async function getGradeBLedger(params: {
     } else if (!co.length) {
       r.noContact++;
     }
+  }
+
+  /**
+   * What was sent and opened for Grade B, per week.
+   *
+   * Grade-scoped for the same reason every other column here is: the Grade A ledger has
+   * its own copy of this, and counting both books in one row produced more mail than
+   * there were addresses to send it to.
+   *
+   * Read from our own send records, which hold 44 of the 70 opens the platform knows
+   * about — the gap is addresses mailed with no send record on our side. The column says
+   * so rather than pretending to be complete.
+   */
+  const engagement = await sql`
+    SELECT o."cohort",
+           COUNT(DISTINCT o."leadId") FILTER (WHERE o."sentAt" IS NOT NULL)::int AS emailed,
+           COUNT(DISTINCT o."leadId") FILTER (WHERE o."openedAt" IS NOT NULL)::int AS opened
+      FROM "OutreachEvent" o
+      JOIN "Lead" l ON l."id" = o."leadId"
+     WHERE o."cohort" IS NOT NULL
+       AND COALESCE(l."manualGrade", l."grade") = 'B'
+       -- CARDS, not addresses, and insured only — to match the mailable column beside it,
+       -- and because a card with two verified addresses is still one account. See the note on the
+       -- Grade A ledger: counting the co-insured here puts more mail on the row than
+       -- there were cards to send it from.
+       AND o."personRole" = 'insured'
+     GROUP BY o."cohort"` as Array<Record<string, unknown>>;
+  for (const e of engagement) {
+    const r = by.get(String(e.cohort));
+    if (!r) continue;
+    r.emailed = Number(e.emailed ?? 0);
+    r.opened = Number(e.opened ?? 0);
   }
 
   return [...by.values()].sort((a, b) => (a.cohort < b.cohort ? -1 : 1));
