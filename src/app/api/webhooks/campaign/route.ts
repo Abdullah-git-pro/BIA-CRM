@@ -152,14 +152,34 @@ export async function POST(request: NextRequest) {
         params: [row.leadId, now],
       };
     } else if (kind === 'bounce') {
-      const hard = String(p.bounceType ?? '').toLowerCase().includes('hard')
-        || /(does not exist|no such user|unknown recipient|550)/i.test(String(p.bounceReason ?? ''));
+      /**
+       * ── The SMTP code decides, when the platform sends one ───────────────
+       *
+       * The first real bounce arrived on 13 Oct: cmanuel@ascendlearning.org, which the
+       * platform's own screen calls a HARD bounce, policy blocked, 5.7.0. We stored it as
+       * SOFT, because neither `bounce_type` nor `bounce_reason` was in the payload under
+       * any name this reads, so it fell through to the 'soft' default — and soft does not
+       * suppress. We would have gone on mailing a dead address.
+       *
+       * An SMTP status is the authority and does not depend on the vendor's wording: 5.x.x
+       * is a permanent failure, 4.x.x a transient one. That is the standard, so it is
+       * checked first and the vendor's own label second.
+       *
+       * Defaulting to soft stays right. Suppressing on a bounce we could not classify
+       * would write off addresses over a full mailbox or a momentary server fault, and
+       * the whole point of the hard/soft split is that only one of them is permanent.
+       */
+      const smtp = String(p.bounceCode ?? p.bounceReason ?? '').match(/\b([45])\.\d{1,3}\.\d{1,3}\b/);
+      const hard = smtp
+        ? smtp[1] === '5'
+        : String(p.bounceType ?? '').toLowerCase().includes('hard')
+          || /(does not exist|no such user|unknown recipient|policy|blocked|550|5\.7)/i.test(String(p.bounceReason ?? ''));
       await client.query(
         `UPDATE "OutreachEvent"
             SET "bouncedAt" = COALESCE("bouncedAt", $2), "bounceType" = COALESCE("bounceType", $3),
                 "bounceReason" = COALESCE("bounceReason", $4), "updatedAt" = $2
           WHERE "id" = $1`,
-        [row.id, now, hard ? 'hard' : (p.bounceType ?? 'soft'), p.bounceReason],
+        [row.id, now, hard ? 'hard' : (p.bounceType ?? 'soft'), p.bounceReason ?? p.bounceCode ?? null],
       );
       // Only a HARD bounce suppresses. A soft bounce is a full mailbox or a transient
       // server problem, and writing the address off for that would be wrong.

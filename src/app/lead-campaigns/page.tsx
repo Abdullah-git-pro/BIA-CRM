@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Container, Box, Typography, Paper, Tabs, Tab, Table, TableHead, TableRow, TableCell,
   TableBody, Chip, CircularProgress, Alert, Stack, Button, LinearProgress, Tooltip,
@@ -75,7 +75,24 @@ export default function LeadCampaignsPage() {
   const [error, setError] = useState<string | null>(null);
   const [openMailbox, setOpenMailbox] = useState<string | null>(null);
 
+  /**
+   * ── Why loads are sequenced ────────────────────────────────────────────────
+   *
+   * A red "fetch failed" banner was sitting above a table of correctly loaded data.
+   * Both were true: two loads were in flight — React runs effects twice in development,
+   * and Refresh can be clicked while one is already running — and when an older, failed
+   * request settled last it painted its error over data a newer, successful one had
+   * already delivered.
+   *
+   * An error from a superseded request is not news about the state on screen, so only the
+   * newest load is allowed to write anything. Without this the screen can claim a failure
+   * it has already recovered from, which is the one thing an error banner must never do.
+   */
+  const loadSeq = useRef(0);
+
   const load = useCallback(async (which: TabKey) => {
+    const seq = ++loadSeq.current;
+    const current = () => seq === loadSeq.current;
     setLoading(true);
     setError(null);
     try {
@@ -83,11 +100,13 @@ export default function LeadCampaignsPage() {
         const res = await fetch('/api/lead-campaigns/overview');
         const json = await res.json();
         if (!res.ok) throw new Error(json.error || 'Could not load campaigns');
+        if (!current()) return;
         setCampaigns(json.data ?? []);
       } else {
         const res = await fetch('/api/lead-campaigns/accounts');
         const json = await res.json();
         if (!res.ok) throw new Error(json.error || 'Could not load mailboxes');
+        if (!current()) return;
         setMailboxes(json.mailboxes ?? []);
         setMailboxTotals({
           totalMailboxes: json.totalMailboxes ?? 0,
@@ -96,9 +115,12 @@ export default function LeadCampaignsPage() {
         });
       }
     } catch (err) {
+      if (!current()) return;
       setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
-      setLoading(false);
+      // Only the newest load owns the spinner, or a superseded request turns it off
+      // while the live one is still running.
+      if (current()) setLoading(false);
     }
   }, []);
 
@@ -332,6 +354,7 @@ export default function LeadCampaignsPage() {
         onClose={() => setOpenMailbox(null)}
         onChanged={() => load('mailboxes')}
       />
+
 
       {createOpen && (
         <CampaignCreateDialog

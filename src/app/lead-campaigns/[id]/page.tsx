@@ -24,6 +24,7 @@ import CampaignCopyCheck from '@/components/CampaignCopyCheck';
 import CampaignSequencePanel from '@/components/CampaignSequencePanel';
 import CampaignAnalyticsPanel from '@/components/CampaignAnalyticsPanel';
 import CampaignRepliesPanel from '@/components/CampaignRepliesPanel';
+import CampaignBouncesPanel from '@/components/CampaignBouncesPanel';
 
 /**
  * One campaign, managed from the CRM.
@@ -62,7 +63,13 @@ const TAB_MAILBOXES = 3;
 // Replies sits beside the mailboxes because that is where the conversation physically
 // lives — a reply arrives in one of those inboxes, and the two are read together.
 const TAB_REPLIES = 4;
-const TAB_SETTINGS = 5;
+/**
+ * Bounces sit beside Replies because they are the same question asked the other way: both
+ * are what came back from a send, and both are read after one. The analytics card reports
+ * a bounce RATE and nothing else, so this is where the rate becomes a name and an address.
+ */
+const TAB_BOUNCES = 5;
+const TAB_SETTINGS = 6;
 
 export default function CampaignDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -311,6 +318,7 @@ export default function CampaignDetailPage() {
               <Tab label={tabLabel('Email sequence', !!noSteps)} />
               <Tab label={tabLabel('Sending mailboxes', !!noMailboxes)} />
               <Tab label="Replies" />
+              <Tab label="Bounces" />
               <Tab label={tabLabel('Settings', !detail.unsubscribeHeader)} />
             </Tabs>
           </Box>
@@ -412,6 +420,8 @@ export default function CampaignDetailPage() {
           )}
 
           {tab === TAB_REPLIES && <CampaignRepliesPanel campaignId={detail.id} />}
+
+          {tab === TAB_BOUNCES && <CampaignBouncesPanel campaignId={detail.id} />}
 
           {tab === TAB_SETTINGS && (
             <CampaignSettingsPanel

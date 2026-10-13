@@ -115,8 +115,24 @@ export function readPayload(body: any) {
     vendorLeadId: pick('lead_id', 'leadId', 'lead.id'),
     step,
     replyText: pick('reply_text', 'reply_text_snippet', 'body.text', 'text', 'message', 'reply_html'),
-    bounceReason: pick('bounce_reason', 'reason', 'error', 'detail'),
-    bounceType: pick('bounce_type', 'bounceType'),
+    /**
+     * Widened after the first real bounce landed and matched none of these.
+     *
+     * The platform calls it a hard bounce, policy blocked, 5.7.0 on its own screen, and
+     * sent us none of that under bounce_reason, reason, error or detail — so it was stored
+     * as a soft bounce by default and did not suppress. Rather than keep guessing one name
+     * at a time, every plausible spelling is read, and the SMTP status is picked up
+     * separately because it classifies a bounce on its own — 5.x.x permanent, 4.x.x
+     * transient — whatever the vendor chooses to call it.
+     */
+    bounceReason: pick('bounce_reason', 'bounceReason', 'reason', 'error', 'detail',
+      'description', 'message', 'bounce.reason', 'bounce.description', 'smtp_response',
+      'diagnostic_code', 'lead.bounce_reason'),
+    bounceType: pick('bounce_type', 'bounceType', 'bounce.type', 'bounce_category',
+      'bounceCategory', 'lead.bounce_type'),
+    /** The SMTP status, e.g. '5.7.0'. The one field that classifies a bounce by itself. */
+    bounceCode: pick('bounce_code', 'bounceCode', 'status_code', 'statusCode', 'smtp_code',
+      'bounce.code', 'code'),
 
     /**
      * Which mailbox actually sent it. Not our choice at push time — the platform picks
