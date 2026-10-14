@@ -30,6 +30,34 @@ export interface NameComparison {
 }
 
 const SUFFIXES = new Set(['JR', 'SR', 'II', 'III', 'IV', 'V']);
+
+/**
+ * Latin tenancy markers the roll appends to an owner string: ET AL (and others), ET UX
+ * (and wife), ET VIR (and husband).
+ *
+ * They are not name tokens. Read as one, "SIMONE, JENNIFER, ETAL" parsed to the first
+ * name "Jennifer Etal" — a person no skip trace will ever find, and 15 credits to discover
+ * it. They also carry real information in the other direction: the roll is stating there
+ * ARE further owners it has not named, which is the opposite of "this property has a
+ * single owner" and must not be recorded as one.
+ *
+ * Two regexes rather than one: a /g regex keeps `lastIndex` between calls, so reusing it
+ * for .test() returns alternating answers on identical input.
+ */
+const OWNER_MARKER = /\bET\.?\s*(?:AL|UX|VIR)\.?\b/i;
+const OWNER_MARKER_G = /\bET\.?\s*(?:AL|UX|VIR)\.?\b/gi;
+
+/** The roll is telling us other owners exist that it has not named. */
+export const hasUnnamedOwners = (raw: unknown): boolean => OWNER_MARKER.test(String(raw ?? ''));
+
+/** Remove the markers and the comma they leave stranded behind them. */
+function stripOwnerMarkers(raw: unknown): string {
+  return String(raw ?? '')
+    .replace(OWNER_MARKER_G, ' ')
+    .replace(/\s*,\s*(?=,|$)/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 const ENTITY_WORDS = /\b(LLC|L\.L\.C|INC|CORP|CORPORATION|COMPANY|CO|HOLDINGS|PROPERTIES|PROPERTY|LP|LLP|LTD|TRUST|ESTATE|TOWNSHIP|BOROUGH|CITY|ASSOCIATES|PARTNERS|REALTY|REVOCABLE|IRREVOCABLE|LIVING|FAMILY)\b/;
 // Words that carry no identifying signal when comparing entity names.
 const ENTITY_NOISE = new Set(['THE', 'LLC', 'INC', 'CORP', 'CORPORATION', 'COMPANY', 'CO', 'LP', 'LLP', 'LTD',
@@ -47,6 +75,17 @@ function norm(s: unknown): string {
 }
 
 const isEntity = (s: string) => ENTITY_WORDS.test(s);
+
+/**
+ * Suffixes removed, initials KEPT — the shape of a bare second party depends on them.
+ *
+ * coreTokens drops single letters, which is right when comparing names and wrong when
+ * deciding what a party is: "S BODDAPATI" collapsed to one token, so the SURNAME was read
+ * as the first name and the card got "Boddapati Venkata".
+ */
+function allTokens(s: string): string[] {
+  return norm(s).split(' ').filter(Boolean).filter((t) => !SUFFIXES.has(t));
+}
 
 /** Drop suffixes and single-letter middle initials — never the only real name token. */
 function coreTokens(s: string): string[] {
@@ -99,7 +138,31 @@ function firstNamesAgree(a: string, b: string): boolean {
   if (a === b) return true;
   const [x, y] = a.length <= b.length ? [a, b] : [b, a];
   if (x.length === 1) return y.startsWith(x);      // initial vs full
-  return x.length >= 3 && y.startsWith(x);          // ALLA vs ALLAN, nickname-ish
+  /**
+   * A whole extra given name is still the same person: we hold "Michelle", the roll holds
+   * "MICHELLE LEIGH". The prefix ends on a word boundary, so nothing was cut in half.
+   */
+  return y.startsWith(`${x} `);
+}
+
+/**
+ * One given name is a prefix of the other — ALLA/ALLAN, DAN/DANIEL.
+ *
+ * This used to count as a full match, and it is not safe enough to: the same test returns
+ * true for ALEXA/ALEXANDER, CARL/CARLA, ROB/ROBERTA and JEAN/JEANNE, which are different
+ * people. A real card had the insured Alexander Grinshpoon and the roll's second owner
+ * Alexa Grinshpoon; graded a match, an automatic override would have replaced the
+ * policyholder with a relative and then skip traced her instead of him.
+ *
+ * So it now softens a mismatch to 'partial' — a human glance — rather than asserting the
+ * two are one person. ALLA/ALLAN costs one review; ALEXA/ALEXANDER costs a wrong card.
+ */
+function firstNamesPrefix(a: string, b: string): boolean {
+  if (!a || !b || a === b) return false;
+  const [x, y] = a.length <= b.length ? [a, b] : [b, a];
+  // Mid-word only. A prefix ending on a space is an extra given name, which
+  // firstNamesAgree already accepts as the same person.
+  return x.length >= 3 && y.startsWith(x) && !y.startsWith(`${x} `);
 }
 
 /**
@@ -112,7 +175,24 @@ function surnamesAgree(a: string, b: string): boolean {
   if (!a || !b) return false;
   if (a === b) return true;
   const squash = (s: string) => s.replace(/\s+/g, '');
-  return squash(a) === squash(b);
+  if (squash(a) === squash(b)) return true;
+  /**
+   * One side carries a compound the other does not: we hold "Keller", the roll holds
+   * "RIGGIN-KELLER, ALEXIS I". Same woman — a married or hyphenated name recorded in full
+   * on title and short on the policy. It read as a different family, so the card was
+   * reported unverified and the skip trace was never credited with finding her.
+   *
+   * Deliberately narrow: the short side must be ONE token appearing whole in the long
+   * side, and at least three characters, so the particles in "DE LA CRUZ" or "VAN DER
+   * BERG" cannot carry a match on their own.
+   */
+  const [shortS, longS] = a.length <= b.length ? [a, b] : [b, a];
+  const shortToks = shortS.split(' ').filter(Boolean);
+  const longToks = longS.split(' ').filter(Boolean);
+  if (shortToks.length === 1 && longToks.length > 1 && shortToks[0].length >= 3) {
+    return longToks.includes(shortToks[0]);
+  }
+  return false;
 }
 
 /** Edit distance, capped — we only ever care whether it is 0, 1, or "more than 1". */
@@ -142,7 +222,27 @@ function surnamesNearMiss(a: string, b: string): boolean {
 }
 
 export interface RollPerson { first: string; last: string; display: string }
-export interface RollOwners { person1: RollPerson | null; person2: RollPerson | null; isEntity: boolean }
+export interface RollOwners {
+  person1: RollPerson | null;
+  person2: RollPerson | null;
+  isEntity: boolean;
+  /**
+   * The other defensible reading of a bare second party, when there is one.
+   *
+   * "MITCHELL, SCOTT & KAYLA NEWMAN" is Kayla NEWMAN; "SCHEIDT, WOODROW W & MARY ANN" is
+   * Mary SCHEIDT. Identical shape, opposite answers, and the record does not say which it
+   * is. Inheriting silently produced "Kayla Mitchell" and threw NEWMAN away — a name the
+   * roll had actually given us.
+   *
+   * So both readings are returned and neither is asserted. The skip trace settles it for
+   * free: whichever of the two it knows at that address is the real one.
+   */
+  person2Alt: RollPerson | null;
+  /** True when person2 is a reading rather than a fact — never trace on it unchecked. */
+  person2Uncertain: boolean;
+  /** The roll says further owners exist that it has not named (ET AL / ET UX / ET VIR). */
+  othersUnnamed: boolean;
+}
 
 const titleCase = (s: string) =>
   s.toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase()).trim();
@@ -176,15 +276,21 @@ function toRollPerson(p: { first: string; last: string } | null): RollPerson | n
  * "Jane Doe" would inherit the primary surname — an accepted edge, not the common case.
  */
 export function parseRollOwners(raw: string): RollOwners {
-  const display = String(raw ?? '').trim();
-  if (!display) return { person1: null, person2: null, isEntity: false };
-  if (isEntity(display)) return { person1: null, person2: null, isEntity: true };
+  const othersUnnamed = hasUnnamedOwners(raw);
+  const empty = { person1: null, person2: null, person2Alt: null, person2Uncertain: false, othersUnnamed };
+  // Markers go before anything else reads the string: "SIMONE, JENNIFER, ETAL" must parse
+  // as SIMONE, JENNIFER, with the fact that there are others kept separately.
+  const display = stripOwnerMarkers(raw);
+  if (!display) return { ...empty, isEntity: false };
+  if (isEntity(display)) return { ...empty, isEntity: true };
 
   const parties = splitParties(display);
   const person1 = toRollPerson(splitPerson(parties[0] ?? ''));
-  if (!person1) return { person1: null, person2: null, isEntity: false };
+  if (!person1) return { ...empty, isEntity: false };
 
   let person2: RollPerson | null = null;
+  let person2Alt: RollPerson | null = null;
+  let person2Uncertain = false;
   if (parties.length >= 2) {
     const rawP2 = parties[1];
     if (rawP2.includes(',')) {
@@ -192,13 +298,86 @@ export function parseRollOwners(raw: string): RollOwners {
       person2 = toRollPerson(splitPerson(rawP2));
     } else {
       // Bare given name(s): the shared surname is listed once on party 1, so inherit it.
-      const toks = coreTokens(rawP2);
-      if (toks.length) {
-        person2 = toRollPerson({ first: toks[0], last: person1.last.toUpperCase() });
+      const toks = allTokens(rawP2);
+      const inherited = person1.last.toUpperCase();
+      const lastTok = toks[toks.length - 1] ?? '';
+      if (toks.length === 1) {
+        person2 = toRollPerson({ first: toks[0], last: inherited });
+      } else if (toks.length > 1) {
+        if (lastTok === inherited) {
+          // "& TATYANA TARANTUL" — the roll simply repeated the surname.
+          person2 = toRollPerson({ first: toks[0], last: lastTok });
+        } else if (toks[0].length === 1 && lastTok.length > 1) {
+          // "& S BODDAPATI" — an initial can only be a given name, so what follows it is
+          // the surname. A different one from party 1, which is the point.
+          person2 = toRollPerson({ first: toks[0], last: lastTok });
+        } else if (lastTok.length === 1) {
+          // "& JANICE V." — a trailing initial is a middle name; the surname is inherited.
+          person2 = toRollPerson({ first: toks[0], last: inherited });
+        } else {
+          /**
+           * "& KAYLA NEWMAN" is a surname the roll spelled out; "& MARY ANN" is a second
+           * given name. Identical shape, opposite answers, and the record does not say.
+           * The inherited reading stays primary so nothing regresses; the alternative
+           * travels beside it and the caller is told not to trust either alone.
+           */
+          person2 = toRollPerson({ first: toks[0], last: inherited });
+          person2Alt = toRollPerson({ first: toks[0], last: lastTok });
+          person2Uncertain = true;
+        }
       }
     }
   }
-  return { person1, person2, isEntity: false };
+  return { person1, person2, person2Alt, person2Uncertain, othersUnnamed, isEntity: false };
+}
+
+/**
+ * Merge a card name with the roll's version of the SAME person: surname from the roll,
+ * given name from the card.
+ *
+ * ── Measured, not assumed (C2 Grade A, 13 Oct) ──────────────────────────────
+ * Nine cards were re-traced with the roll's full version of the insured name, against
+ * traces the card's version had already confirmed:
+ *
+ *   middle names ADDED by the roll     5 sent, 5 NOT FOUND
+ *     Raul Garcia → Raul Edelman Quesada Garcia, Kelli Perry → Kelli Lynn Perry, …
+ *   middle initial REMOVED             2 sent, 2 confirmed
+ *   compound SURNAME corrected         1 sent, 1 confirmed  (Keller → Riggin-Keller)
+ *
+ * The roll writes what is on the deed; the skip-trace vendor knows people by the name they
+ * use. Taking the roll's given name made five reachable households unreachable and found
+ * nobody new. Taking its surname fixed the one card the CRM had genuinely wrong.
+ *
+ * So each source supplies the half it is actually good at. This is deliberately NOT a
+ * decision about whether the two names are the same person — call it only after a match
+ * has been established, never to force one.
+ */
+export function mergeOwnerName(
+  card: { first?: string | null; last?: string | null },
+  roll: { first?: string | null; last?: string | null },
+): { first: string; last: string; changed: boolean } {
+  const cardFirst = String(card.first ?? '').trim();
+  const cardLast = String(card.last ?? '').trim();
+  const rollFirst = String(roll.first ?? '').trim();
+  const rollLast = String(roll.last ?? '').trim();
+
+  // The roll's surname wins — that is the correction worth having.
+  const last = rollLast || cardLast;
+
+  /**
+   * The card's given name wins, with one exception: when the card holds only an initial
+   * and the roll spells the name out ("S BODDAPATI" on the roll, "Sahana" on the card is
+   * the usual direction, but it occurs the other way too). Only the FIRST token is taken,
+   * so a roll that also carries middle names cannot smuggle them back in.
+   */
+  const cardIsInitial = cardFirst.replace(/\W/g, '').length <= 1;
+  const first = (!cardFirst || cardIsInitial) && rollFirst
+    ? rollFirst.split(/\s+/)[0]
+    : cardFirst;
+
+  const key = (s: string) => s.toUpperCase().replace(/[^A-Z]/g, '');
+  const changed = key(first) !== key(cardFirst) || key(last) !== key(cardLast);
+  return { first, last, changed };
 }
 
 /**
@@ -212,7 +391,9 @@ export function compareOwnerNames(
   const ourFirstRaw = String(ours.first ?? '').replace(/\bnull\b/gi, '').trim();
   const ourLastRaw = String(ours.last ?? '').trim();
   const oursDisplay = [ourFirstRaw, ourLastRaw].filter(Boolean).join(' ').trim();
-  const theirsDisplay = String(theirs ?? '').trim();
+  // ET AL / ET UX / ET VIR are tenancy markers, not part of anyone's name — left in, they
+  // turned "SIMONE, JENNIFER, ETAL" into the first name "Jennifer Etal" and never matched.
+  const theirsDisplay = stripOwnerMarkers(theirs);
 
   if (!oursDisplay || !theirsDisplay) {
     return { result: 'unknown', detail: 'Not enough name data to compare', ours: oursDisplay, theirs: theirsDisplay };
@@ -244,9 +425,14 @@ export function compareOwnerNames(
     if (lastOk && best.result !== 'partial') {
       best = {
         result: 'partial',
-        detail: p.first
-          ? `Surname matches, but the record shows "${p.first}" — could be a spouse or co-owner`
-          : 'Surname matches the tax record',
+        // Named apart from the spouse/co-owner case: "Alla" against "Allan" is probably the
+        // same person written short, while "Alexa" against "Alexander" is probably not, and
+        // the reviewer can tell the two situations apart at a glance only if we say which.
+        detail: firstNamesPrefix(ourSide.first, p.first)
+          ? `Given name is a near match — we have "${ourSide.first}", the record shows "${p.first}". Confirm it is the same person.`
+          : p.first
+            ? `Surname matches, but the record shows "${p.first}" — could be a spouse or co-owner`
+            : 'Surname matches the tax record',
         ours: oursDisplay, theirs: theirsDisplay,
       };
     }

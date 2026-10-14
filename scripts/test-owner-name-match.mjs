@@ -22,7 +22,7 @@ execSync(
   `npx tsc src/services/ownerNameMatch.service.ts --outDir "${out}" --module es2020 --target es2020 --moduleResolution node`,
   { stdio: 'pipe' },
 );
-const { compareOwnerNames, parseRollOwners } = await import(pathToFileURL(join(out, 'ownerNameMatch.service.js')).href);
+const { compareOwnerNames, parseRollOwners, mergeOwnerName } = await import(pathToFileURL(join(out, 'ownerNameMatch.service.js')).href);
 
 let pass = 0; const failures = [];
 const t = (label, ours, theirs, expect) => {
@@ -65,6 +65,18 @@ t('unrelated entity', { first: '', last: 'Kasmon Llc' }, 'SPARTAN REAL ESTATE HO
 t('no record name', { first: 'Theresa', last: 'Brummer' }, '', 'unknown');
 t('no insured name', { first: '', last: '' }, 'BRUMMER, THERESA', 'unknown');
 
+// ── Found in the C2 Grade A shadow run, 13 Oct ──────────────────────────────
+console.log('\nShadow-run regressions (C2 Grade A, 13 Oct):');
+// "ETAL" was read as part of the first name ("Jennifer Etal"), so the roll's own insured
+// never matched the traced person and the card reported unverified.
+t('ET AL marker is not a name', { first: 'Jennifer', last: 'Simone' }, 'SIMONE, JENNIFER, ETAL', 'match');
+t('ET UX marker is not a name', { first: 'Woodrow', last: 'Scheidt' }, 'SCHEIDT, WOODROW ET UX', 'match');
+// We hold the short surname, the roll holds the compound. Same woman.
+t('compound surname, we hold the short form', { first: 'Alexis', last: 'Keller' }, 'RIGGIN-KELLER, ALEXIS I', 'match');
+// ...but a shared particle must not carry a match on its own.
+t('particle alone is not a surname match', { first: 'Maria', last: 'De' }, 'DE LA CRUZ, MARIA', 'mismatch');
+t('unrelated compound is still a mismatch', { first: 'John', last: 'Harris' }, 'RIGGIN-KELLER, ALEXIS I', 'mismatch');
+
 // ── parseRollOwners — capturing BOTH insureds (Frank Jul-2026, verified vs live rolls)
 console.log('\nTwo-insured extraction from the tax roll (parseRollOwners):');
 const p = (label, raw, expect) => {
@@ -88,5 +100,70 @@ p('municipality is an entity', 'TOWNSHIP OF HOWELL', { p1: null, p2: null, entit
 p('empty string', '', { p1: null, p2: null });
 
 rmSync(out, { recursive: true, force: true });
+
+// ── The ambiguous bare second party (C2 Grade A, 13 Oct) ────────────────────
+// "& KAYLA NEWMAN" is a surname the roll spelled out; "& MARY ANN" is a second given
+// name. Identical shape, opposite answers — so both readings are returned and the caller
+// is told not to trust either alone. Silently inheriting produced "Kayla Mitchell" and
+// discarded NEWMAN, a name the roll had actually given us.
+console.log('\nAmbiguous bare second party (parseRollOwners):');
+const alt = (label, raw, expect) => {
+  const r = parseRollOwners(raw);
+  const got = {
+    p2: r.person2?.display ?? null,
+    p2Alt: r.person2Alt?.display ?? null,
+    uncertain: r.person2Uncertain,
+  };
+  const ok = got.p2 === expect.p2 && got.p2Alt === expect.p2Alt && got.uncertain === expect.uncertain;
+  if (ok) { pass++; console.log(`  ok   ${label}`); }
+  else { failures.push(`${label} → got ${JSON.stringify(got)}`); console.log(`  FAIL ${label} → ${JSON.stringify(got)}`); }
+};
+alt('second party may carry its own surname', 'MITCHELL, SCOTT & KAYLA NEWMAN',
+  { p2: 'Kayla Mitchell', p2Alt: 'Kayla Newman', uncertain: true });
+alt('initial plus surname', 'VENKATA, SARAT CVK & S BODDAPATI',
+  { p2: 'S Boddapati', p2Alt: null, uncertain: false });
+alt('two given names stays certain-ish but offers the alt', 'SCHEIDT, WOODROW W & MARY ANN',
+  { p2: 'Mary Scheidt', p2Alt: 'Mary Ann', uncertain: true });
+alt('single given name is unambiguous', 'PEREZ, ELIOT & MARISOL',
+  { p2: 'Marisol Perez', p2Alt: null, uncertain: false });
+alt('repeated surname is unambiguous', 'TARANTUL, MICHAEL & TATYANA TARANTUL',
+  { p2: 'Tatyana Tarantul', p2Alt: null, uncertain: false });
+
+console.log('\nUnnamed-owner marker:');
+const un = (label, raw, expect) => {
+  const r = parseRollOwners(raw);
+  if (r.othersUnnamed === expect) { pass++; console.log(`  ok   ${label}`); }
+  else { failures.push(`${label} → othersUnnamed ${r.othersUnnamed}`); console.log(`  FAIL ${label}`); }
+};
+un('ETAL flags unnamed co-owners', 'SIMONE, JENNIFER, ETAL', true);
+un('plain record does not', 'PEREZ, ELIOT & MARISOL', false);
+
+// ── The prefix rule, split (C2 Grade A, 13 Oct) ─────────────────────────────
+// A prefix ending on a space is an extra given name — the same person. A prefix that cuts
+// a name in half is not: Alexander Grinshpoon and Alexa Grinshpoon are two people, and the
+// comparator graded them a match, which an automatic override would have acted on.
+console.log('\nGiven-name prefixes:');
+t('extra given name is the same person', { first: 'Michelle', last: 'Labolt' }, 'LABOLT, MICHELLE LEIGH', 'match');
+t('mid-word prefix is NOT a full match', { first: 'Alexander', last: 'Grinshpoon' }, 'GRINSHPOON, ALEXA', 'partial');
+t('Carl is not Carla', { first: 'Carl', last: 'Vincent' }, 'VINCENT, CARLA', 'partial');
+t('initial still matches the full name', { first: 'C', last: 'Markowitz' }, 'MARKOWITZ, CINDY', 'match');
+
+// ── mergeOwnerName — surname from the roll, given name from the card ────────
+// Measured on C2: the roll's middle names made 5 of 5 reachable households unreachable,
+// while its surname correction fixed the one card we had genuinely wrong.
+console.log('\nMerging a card name with the roll (mergeOwnerName):');
+const mg = (label, card, roll, expect) => {
+  const r = mergeOwnerName(card, roll);
+  const got = `${r.first} ${r.last}`.trim();
+  if (got === expect) { pass++; console.log(`  ok   ${label}`); }
+  else { failures.push(`${label} → got "${got}", expected "${expect}"`); console.log(`  FAIL ${label} → "${got}"`); }
+};
+mg('roll middle names are discarded', { first: 'Raul', last: 'Garcia' }, { first: 'Raul Edelman Quesada', last: 'Garcia' }, 'Raul Garcia');
+mg('roll surname is taken', { first: 'Alexis', last: 'Keller' }, { first: 'Alexis', last: 'Riggin Keller' }, 'Alexis Riggin Keller');
+mg('card initial is filled from the roll, first token only', { first: 'S', last: 'Boddapati' }, { first: 'Sarat Cvk', last: 'Boddapati' }, 'Sarat Boddapati');
+mg('card given name wins over the roll', { first: 'Sahana', last: 'Boddapati' }, { first: 'S', last: 'Boddapati' }, 'Sahana Boddapati');
+mg('empty card name falls back to the roll', { first: '', last: '' }, { first: 'Marisol', last: 'Perez' }, 'Marisol Perez');
+
+
 console.log(`\n${pass} passed, ${failures.length} failed`);
 if (failures.length) { failures.forEach((f) => console.error('  ' + f)); process.exit(1); }

@@ -18,6 +18,7 @@ import ManageAccountsIcon from '@mui/icons-material/ManageAccounts';
 import EventRepeatIcon from '@mui/icons-material/EventRepeat';
 import AssessmentIcon from '@mui/icons-material/Assessment';
 import SwapVertIcon from '@mui/icons-material/SwapVert';
+import AccountTreeIcon from '@mui/icons-material/AccountTree';
 import InsightsIcon from '@mui/icons-material/Insights';
 import PhoneIcon from '@mui/icons-material/Phone';
 import MarkEmailReadIcon from '@mui/icons-material/MarkEmailRead';
@@ -102,6 +103,9 @@ export default function Sidebar({ collapsed, onToggle, mobileOpen = false, onMob
       // Above QC. QC is where somebody goes when they suspect a problem; the ledger is the
       // standing measure of the pipeline and the first thing Frank reads.
       { label: 'Cohorts',     icon: <SwapVertIcon />,        path: '/admin/cohorts' },
+      // Beside Cohorts, because it answers the question the ledger raises: the ledger says
+      // what a week HAS, this says how far through the pipeline that week has got.
+      { label: 'Pipeline',    icon: <AccountTreeIcon />,     path: '/admin/pipeline' },
       { label: 'QC Reports',  icon: <AssessmentIcon />,      path: '/admin/qc' },
       { label: 'Outreach',    icon: <InsightsIcon />,        path: '/admin/outreach' },
       { label: 'Weekly Pull', icon: <EventRepeatIcon />,     path: '/admin/pull-weekly' },

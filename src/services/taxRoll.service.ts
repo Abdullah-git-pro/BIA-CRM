@@ -70,6 +70,21 @@ export const WIPP_BY_ZIP: Record<string, Municipality[]> = {
   '07728': [
     { wippId: '1317', town: 'Freehold Township' },
     { wippId: '1316', town: 'Freehold Borough' },
+    /**
+     * Howell, because a "Freehold" mailing address is not a statement about which township
+     * collects the tax.
+     *
+     * Three C2 cards reported "not on the tax roll" and all three sat on Howell's roll under
+     * the address we were already sending, correctly expanded: 13 DECOY LANE (MCMANAMAN,
+     * ERICA), 44 ATLANTIS TERRACE (POSTEN, MARGARET T) and 21 SEABREEZE SQUARE, which also
+     * names a co-insured — JANUS, KAITLYN — that the card did not have. The lookup was
+     * never wrong about the address; it was asking the wrong towns.
+     *
+     * Adding a town is safe rather than risky: a record is only accepted when its full
+     * normalised address, unit included, equals ours, so a wider search cannot return a
+     * neighbour's property — it can only find one we were missing or report ambiguity.
+     */
+    { wippId: '1321', town: 'Howell' },
   ],
   '07730': [{ wippId: '1318', town: 'Hazlet' }],
   // Middletown publishes property tax only — no utility roll (the fallback handles it).
@@ -184,10 +199,25 @@ function throttled<T>(fn: () => Promise<T>): Promise<T> {
 
 // ── Address handling ────────────────────────────────────────────────────────
 
+/**
+ * Both sides are abbreviated, and not with the same abbreviations.
+ *
+ * We shorten Court to "Ct"; Holmdel's roll shortens it to "CRT". Expanding only our side
+ * left "66 LAGUNA HILLS COURT" against the roll's "66 LAGUNA HILLS CRT" — the broad query
+ * FOUND the property and the exact-match test then threw it away, which reads as "not on
+ * the tax roll" and is the most misleading answer available.
+ *
+ * CRT, TERR, DRV and CIRC are observed on live rolls; the rest are the ordinary USPS
+ * forms. Everything maps to the long word, so it does not matter which side is short.
+ */
 const STREET_SUFFIX: Record<string, string> = {
   ST: 'STREET', RD: 'ROAD', DR: 'DRIVE', CT: 'COURT', LN: 'LANE', AVE: 'AVENUE', AV: 'AVENUE',
   BLVD: 'BOULEVARD', CIR: 'CIRCLE', TER: 'TERRACE', PL: 'PLACE', PKWY: 'PARKWAY', HWY: 'HIGHWAY',
   SQ: 'SQUARE', TRL: 'TRAIL', WAY: 'WAY',
+  // Variants seen on the rolls themselves.
+  CRT: 'COURT', CTS: 'COURT', TERR: 'TERRACE', DRV: 'DRIVE', CIRC: 'CIRCLE', CRCL: 'CIRCLE',
+  LNE: 'LANE', AVEN: 'AVENUE', BLV: 'BOULEVARD', PKY: 'PARKWAY', PKWAY: 'PARKWAY',
+  SQR: 'SQUARE', PLC: 'PLACE', RDG: 'RIDGE', HGTS: 'HEIGHTS', HTS: 'HEIGHTS',
 };
 
 /**
@@ -218,6 +248,15 @@ export function normalizeStreet(s: unknown): string {
   // the leading house number, which is the shape the source actually produces.
   const glued = base.match(/^(\d+)([A-Z])\s+(.*)$/);
   if (glued) base = `${glued[1]} ${glued[3]} UNIT ${glued[2]}`;
+
+  /**
+   * "UNIT 5-A" and "UNIT 5A" are the same flat.
+   *
+   * Woodbridge's roll hyphenates the sub-unit, our source does not, and the exact-match
+   * test compares the whole string — so the two forms never met. Scoped to the token after
+   * UNIT so a genuinely hyphenated STREET name is untouched.
+   */
+  base = base.replace(/\b(UNIT|APT|APARTMENT|STE|SUITE|BLDG|BUILDING)\s+([A-Z0-9]+)-([A-Z0-9]+)\b/g, '$1 $2$3');
 
   return base
     .split(' ')
