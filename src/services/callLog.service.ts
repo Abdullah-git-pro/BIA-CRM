@@ -55,7 +55,34 @@ export type CallState = {
   /** Numbers proven dead or wrong. Never offered again. */
   invalidNumbers: string[];
   /** Still worth dialling: on the card, not invalid, household not suppressed. */
-  dialable: Array<{ number: string; role: 'insured' | 'co_insured'; label: string }>;
+  dialable: Array<{
+    number: string; role: 'insured' | 'co_insured'; label: string;
+    /**
+     * What the identity/liveness check said about this number, when it has been checked.
+     *
+     * ── Shown, never used to withhold ─────────────────────────────────────
+     * Abdullah, 14 Oct 2026: mark the numbers that are not the insured's, but leave them
+     * on the card. Measured against 221 calls whose outcome we already knew, nameMatch
+     * false never once appeared on a number that reached the insured — but two of C2's
+     * 27 were live mobiles scoring 100, belonging to somebody else at the same house.
+     * A filter would have thrown those away; a mark lets the person dialling decide
+     * whether to ring and ask.
+     *
+     * Null means not yet checked, which is NOT the same as failed and must not be drawn
+     * as one.
+     */
+    verified?: {
+      nameMatch: boolean | null;
+      activityScore: number | null;
+      contactGrade: string | null;
+    } | null;
+  }>;
+  /**
+   * How many numbers were withheld because an identity check attributed them to somebody
+   * else. Reported rather than silent: a number vanishing without explanation is how
+   * somebody decides the screen is broken and goes back to a spreadsheet.
+   */
+  notTheirsCount: number;
   /** Why the queue is not offering this lead, when it is not. */
   blockedReason: string | null;
 };
@@ -251,6 +278,70 @@ export function invalidPhonesOf(lead: Record<string, unknown>): string[] {
 }
 
 /**
+ * Numbers an identity check says belong to somebody else.
+ *
+ * ── Why this is not folded into invalidPhones ───────────────────────────────
+ * invalidPhones is written by a human outcome: Ruben rang it and found it dead or got the
+ * wrong person. This is a vendor's opinion, formed without dialling. They happen to lead
+ * to the same action today, but they are different kinds of fact and merging them would
+ * make "proven by a call" indistinguishable from "a provider thinks" the first time the
+ * provider is wrong.
+ *
+ * ── Why only nameMatch false, and not a low activity score ──────────────────
+ * Abdullah, 14 Oct 2026. Measured against 221 calls whose outcome we already knew:
+ * nameMatch false appeared on 73 numbers and NOT ONE of them had ever reached the insured,
+ * so removing them costs nothing we can detect. The activity score is a good signal —
+ * >= 70 blocked 87% of dead numbers — but the evidence that it keeps the good calls rests
+ * on 14 observations, which is not enough to start withholding numbers from the person
+ * doing the ringing. Those stay on the card, marked "quiet line".
+ *
+ * A number with no verdict is NOT disabled. Only C2 has been graded; treating unchecked as
+ * failed would empty the queue.
+ */
+export function notTheirsOf(
+  verifications: Array<{ value: unknown; nameMatch: unknown }> | null | undefined,
+): Set<string> {
+  const out = new Set<string>();
+  for (const v of verifications ?? []) {
+    if (v?.nameMatch === false) {
+      const d = String(v.value ?? '').replace(/\D/g, '');
+      if (d) out.add(d);
+    }
+  }
+  return out;
+}
+
+/**
+ * Every withheld number in the book, by lead — one query, for screens that count in bulk.
+ *
+ * ── Why this is here and not in each screen ─────────────────────────────────
+ * The lead card, the Phone dashboard, call coverage and the QC report all answer "how many
+ * numbers has this card got". They have disagreed before: the card excluded numbers proven
+ * dead and kept do-not-call ones, the Phone list did the opposite, and the screen that
+ * SORTS by the count put cards with nothing to ring at the top of Ruben's list. That is
+ * why liveNumbersOnCard exists at all.
+ *
+ * So the identity verdicts load in one place rather than four. A lead with no verdict —
+ * everything outside C2 today — is absent from the map and its callers see an empty set,
+ * which leaves behaviour exactly as it was.
+ */
+export async function notTheirsByLead(): Promise<Map<string, Set<string>>> {
+  const rows = await sql`
+    SELECT "leadId", "value"
+      FROM "ContactVerification"
+     WHERE "channel" = 'phone' AND "nameMatch" IS FALSE` as Array<{ leadId: string; value: string }>;
+  const map = new Map<string, Set<string>>();
+  for (const r of rows) {
+    const digits = String(r.value ?? '').replace(/\D/g, '');
+    if (!digits) continue;
+    const key = String(r.leadId);
+    if (!map.has(key)) map.set(key, new Set());
+    map.get(key)!.add(digits);
+  }
+  return map;
+}
+
+/**
  * The numbers actually worth ringing: on the card, not proven dead, not do-not-call.
  *
  * ── Why this exists rather than each screen filtering for itself ─────────────
@@ -268,9 +359,20 @@ export function invalidPhonesOf(lead: Record<string, unknown>): string[] {
  *
  * The card keeps its own, wider list for DISPLAY. This is the one for COUNTING.
  */
-export function liveNumbersOnCard(lead: Record<string, unknown>): ReturnType<typeof numbersOnCard> {
+export function liveNumbersOnCard(
+  lead: Record<string, unknown>,
+  /**
+   * Numbers an identity check attributed to somebody else — see notTheirsOf.
+   *
+   * Passed in rather than read here because this function is pure over the lead record and
+   * the verdicts live in their own table. Omitting it leaves behaviour exactly as it was,
+   * which is what every caller that has not been taught about them should get.
+   */
+  notTheirs: Set<string> = new Set(),
+): ReturnType<typeof numbersOnCard> {
   const dead = new Set(invalidPhonesOf(lead));
-  const live = numbersOnCard(lead).filter((n) => !n.dnc && !dead.has(n.number));
+  const live = numbersOnCard(lead)
+    .filter((n) => !n.dnc && !dead.has(n.number) && !notTheirs.has(n.number));
 
   /**
    * ── The tail of a person's number history is not "worth ringing" ─────────
@@ -344,10 +446,22 @@ export const DEEP_TAIL_RANK = 7;
 const isLandline = (type: string | null): boolean => /land|fixed/i.test(String(type ?? ''));
 
 /** Live numbers held back as a reserve because they sit deep in the vendor's ranking. */
-export function reserveNumbersOnCard(lead: Record<string, unknown>): ReturnType<typeof numbersOnCard> {
+export function reserveNumbersOnCard(
+  lead: Record<string, unknown>,
+  /**
+   * Withheld numbers must be excluded from BOTH sides of this subtraction.
+   *
+   * Reserve is "live, but not counted as worth ringing" — the landlines and the deep tail.
+   * Passing the set only to liveNumbersOnCard would take a number out of the counted side
+   * and leave it in `live`, so a number that is not this household's would resurface here
+   * as a reserve to fall back on. It is not a fallback; it is somebody else's phone.
+   */
+  notTheirs: Set<string> = new Set(),
+): ReturnType<typeof numbersOnCard> {
   const dead = new Set(invalidPhonesOf(lead));
-  const live = numbersOnCard(lead).filter((n) => !n.dnc && !dead.has(n.number));
-  const counted = new Set(liveNumbersOnCard(lead).map((n) => n.number));
+  const live = numbersOnCard(lead)
+    .filter((n) => !n.dnc && !dead.has(n.number) && !notTheirs.has(n.number));
+  const counted = new Set(liveNumbersOnCard(lead, notTheirs).map((n) => n.number));
   return live.filter((n) => !counted.has(n.number));
 }
 
@@ -392,7 +506,37 @@ export async function callState(lead: Record<string, unknown>): Promise<CallStat
   const numbersTried = [...new Set(rows.map((r) => r.numberDialled))];
   const distinctDays = new Set(rows.map((r) => dayOf(r.attemptedAt))).size;
   const onCard = numbersOnCard(lead);
-  const dialable = onCard.filter((n) => !invalidNumbers.includes(n.number));
+  const dialableBeforeIdentity = onCard.filter((n) => !invalidNumbers.includes(n.number));
+
+  /**
+   * Attach the identity/liveness verdict, where one exists.
+   *
+   * One query for the whole card rather than per number. A lead that has never been
+   * through the check simply gets nulls — unchecked and failed are different states, and
+   * the screen draws them differently.
+   */
+  const verified = await sql`
+    SELECT "value", "nameMatch", "activityScore", "contactGrade"
+      FROM "ContactVerification"
+     WHERE "leadId" = ${leadId} AND "channel" = 'phone'` as Array<Record<string, unknown>>;
+  const grades = new Map(verified.map((v) => [String(v.value), {
+    nameMatch: v.nameMatch as boolean | null,
+    activityScore: v.activityScore == null ? null : Number(v.activityScore),
+    contactGrade: (v.contactGrade as string) ?? null,
+  }]));
+
+  /**
+   * Numbers registered to somebody else are withheld, not shown greyed out.
+   *
+   * They are still reported — `notTheirsCount` — because a number disappearing without
+   * explanation is how somebody concludes the screen is broken and starts working from a
+   * spreadsheet again. The panel says how many and why.
+   */
+  const notTheirs = notTheirsOf(verified as Array<{ value: unknown; nameMatch: unknown }>);
+  const dialable = dialableBeforeIdentity
+    .filter((n) => !notTheirs.has(n.number))
+    .map((n) => ({ ...n, verified: grades.get(n.number) ?? null }));
+  const notTheirsCount = dialableBeforeIdentity.length - dialable.length;
 
   const reachedOutcomes = new Set(CALL_OUTCOMES.filter((o) => o.reached).map((o) => o.key));
   const contacted = rows.some((r) => reachedOutcomes.has(r.outcome));
@@ -442,7 +586,23 @@ export async function callState(lead: Record<string, unknown>): Promise<CallStat
       blockedReason = `This household is suppressed (${hit.reason}). Do not call.`;
     }
   } else if (onCard.length) {
-    blockedReason = 'Every number on this card has been marked invalid.';
+    /**
+     * Say WHICH of the two emptied the card.
+     *
+     * "Marked invalid" means a person rang it and found it dead. An identity check saying
+     * the number belongs to somebody else is a vendor's opinion formed without dialling,
+     * and on a card with nothing left it is the difference between "we have exhausted this
+     * household" and "the numbers we hold are not theirs — write to them instead". Raul
+     * Garcia's card is the live example: three numbers, none of them his.
+     */
+    const withheldAll = notTheirsCount > 0 && notTheirsCount >= dialableBeforeIdentity.length;
+    blockedReason = withheldAll
+      ? `No number on this card belongs to this household — ${notTheirsCount} `
+        + `${notTheirsCount === 1 ? 'is' : 'are'} registered to somebody else. Reach them by post.`
+      : notTheirsCount > 0
+        ? `Nothing left to ring: the rest were marked invalid and ${notTheirsCount} `
+          + `${notTheirsCount === 1 ? 'is' : 'are'} registered to somebody else.`
+        : 'Every number on this card has been marked invalid.';
   } else {
     blockedReason = 'No phone number on this card.';
   }
@@ -480,6 +640,7 @@ export async function callState(lead: Record<string, unknown>): Promise<CallStat
     nextCallbackAt: upcoming[0] ?? null,
     invalidNumbers,
     dialable,
+    notTheirsCount,
     blockedReason,
   };
 }

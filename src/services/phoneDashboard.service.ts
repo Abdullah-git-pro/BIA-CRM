@@ -1,6 +1,6 @@
 import { sql } from '@/lib/neon';
 import { insuredEmails, coInsuredName } from './recipients.service';
-import { numbersOnCard, liveNumbersOnCard, reserveNumbersOnCard, invalidPhonesOf } from './callLog.service';
+import { numbersOnCard, liveNumbersOnCard, reserveNumbersOnCard, invalidPhonesOf, notTheirsByLead } from './callLog.service';
 import { deliverableAddresses } from './emailVerification.service';
 import { COHORT_LABEL } from './campaignSegment.service';
 import { CALL_STATUS_LABEL, isReachedStatus, type CallStatus } from '@/lib/callOutcomes';
@@ -173,6 +173,16 @@ export async function getPhoneDashboard(f: PhoneFilters = {}): Promise<PhoneDash
   const callRows = await getQcReport('call_outcome', {});
   const byProperty = new Map(callRows.map((r) => [String(r.propertyId), r]));
 
+  /**
+   * Numbers an identity check attributed to somebody else, per lead.
+   *
+   * The lead card stopped offering these on 14 Oct. If this screen kept counting them
+   * towards "worth ringing", the two would disagree in front of Ruben — the exact fault
+   * liveNumbersOnCard was written to end. Loaded from the shared helper so there is one
+   * definition rather than one per screen.
+   */
+  const notTheirsByLeadMap = await notTheirsByLead();
+
   const queue: PhoneQueueRow[] = [];
   let verifiedCount = 0;
   let unreachableAnyChannel = 0;
@@ -192,7 +202,16 @@ export async function getPhoneDashboard(f: PhoneFilters = {}): Promise<PhoneDash
     const isVerified = addresses.some((e) => deliverable.has(String(e).trim().toLowerCase()));
     if (isVerified) { verifiedCount++; c.verified++; }
 
-    const nums = numbersOnCard(l);
+    const notTheirs = notTheirsByLeadMap.get(String(l.id)) ?? new Set<string>();
+    /**
+     * The card's own list, minus numbers that are not this household's.
+     *
+     * Removed from `nums` and not only from `live`, because `nums` is what "no numbers"
+     * and the dead count are measured against. A card holding three numbers that all
+     * belong to somebody else holds nothing, and reporting it as three would put it in
+     * the call queue with a figure the card itself contradicts.
+     */
+    const nums = numbersOnCard(l).filter((n) => !notTheirs.has(n.number));
     /*
      * Not do-not-call AND not already proven dead.
      *
@@ -202,7 +221,7 @@ export async function getPhoneDashboard(f: PhoneFilters = {}): Promise<PhoneDash
      * list — the opposite of what the ordering is for.
      */
     const coName = coInsuredName(l);
-    const live = liveNumbersOnCard(l);
+    const live = liveNumbersOnCard(l, notTheirs);
     const callable = live.length;
     // Counted directly, not as a subtraction: a number can be BOTH flagged and dead, and
     // nums - live - dnc would quietly count it twice and report a negative.
@@ -210,7 +229,7 @@ export async function getPhoneDashboard(f: PhoneFilters = {}): Promise<PhoneDash
     const deadNumbers = nums.filter((n) => dead.has(n.number)).length;
     // Counted, not derived, for the same reason as deadNumbers: callable + dnc + dead +
     // reserve is NOT the total, because one number can be in two of those at once.
-    const reserveNumbers = reserveNumbersOnCard(l).length;
+    const reserveNumbers = reserveNumbersOnCard(l, notTheirs).length;
     if (!nums.length) c.noNumbers++;
     if (!callable && !isVerified) unreachableAnyChannel++;
 

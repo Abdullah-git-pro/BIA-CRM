@@ -66,6 +66,20 @@ export type PipelineCohort = {
    * most likely to be wrong.
    */
   tracedBeforeRoll: number;
+
+  /** ── Phase 4: the contact check ────────────────────────────────────── */
+  /**
+   * Cards carrying at least one identity verdict, and cards carrying at least one number
+   * the provider says is NOT the insured's.
+   *
+   * Counted as CARDS, not as contact points, and with no denominator — on purpose. How many
+   * numbers a card holds is a per-person attribution that has to be walked lead by lead
+   * (numbersOnCard), and putting that walk inside the cohort list would turn one query into
+   * a thousand-row read on every page load. The exact remaining count is what the button's
+   * dry run answers, in front of the person who is about to spend the money.
+   */
+  contactsCards: number;
+  contactsNotTheirs: number;
 };
 
 const REVIEW_STATUSES = ['partial', 'mismatch', 'ambiguous', 'unknown'];
@@ -131,6 +145,30 @@ export async function getPipelineStatus(params: {
      GROUP BY "cohort"
      ORDER BY "cohort" DESC` as Array<Record<string, unknown>>;
 
+  /**
+   * The contact check, asked separately rather than joined into the aggregate above.
+   *
+   * A card holds up to 24 numbers, so joining the verdict table into the Lead aggregate
+   * would multiply every other counter by the number of verdicts and quietly inflate the
+   * whole row — the same shape of error that made the campaign ledger count a send once per
+   * recipient. Two small queries merged by cohort cannot do that.
+   */
+  const contactRows = await sql`
+    SELECT l."cohort",
+           COUNT(DISTINCT v."leadId")::int AS cards,
+           COUNT(DISTINCT v."leadId") FILTER (
+             WHERE v."channel" = 'phone' AND v."nameMatch" IS FALSE
+           )::int AS not_theirs
+      FROM "ContactVerification" v
+      JOIN "Lead" l ON l."id" = v."leadId"
+     WHERE COALESCE(l."manualGrade", l."grade") = ${grade}
+       AND l."cohort" = ANY(${numberedCohorts()})
+     GROUP BY l."cohort"` as Array<Record<string, unknown>>;
+
+  const contactsBy = new Map(
+    contactRows.map((r) => [String(r.cohort), { cards: Number(r.cards ?? 0), notTheirs: Number(r.not_theirs ?? 0) }]),
+  );
+
   const n = (v: unknown) => Number(v ?? 0);
 
   return rows.map((r) => {
@@ -173,6 +211,8 @@ export async function getPipelineStatus(params: {
       coNeedsReview: n(r.co_needs_review),
       traced,
       tracedBeforeRoll,
+      contactsCards: contactsBy.get(String(r.cohort))?.cards ?? 0,
+      contactsNotTheirs: contactsBy.get(String(r.cohort))?.notTheirs ?? 0,
     };
   });
 }

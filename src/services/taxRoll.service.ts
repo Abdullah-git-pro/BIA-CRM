@@ -147,9 +147,29 @@ export const WIPP_BY_ZIP: Record<string, Municipality[]> = {
   '07064': [{ wippId: '1225', town: 'Woodbridge' }],  // Port Reading
   '07077': [{ wippId: '1225', town: 'Woodbridge' }],  // Sewaren
   '08832': [{ wippId: '1225', town: 'Woodbridge' }],  // Keasbey
-  // Pull only, no WIPP verify: 08857 Old Bridge (in-house SharePoint portal; 1215 empty
-  // on the Edmunds API). 08859 (Parlin) is shared Sayreville/Old Bridge — Sayreville side
-  // verifies, Old Bridge side won't match and falls through unverified.
+  /**
+   * ── Towns that are NOT on this vendor, checked and ruled out ──────────────
+   *
+   * These are not missing entries waiting for somebody to find an id. Each runs its tax
+   * portal on a different system, so there is no WIPP tenant to point at and no amount of
+   * looking will produce one. Verified 14 Oct 2026 against each township's own site:
+   *
+   *   08857  Old Bridge          in-house SharePoint portal; id 1215 answers 403
+   *   07747  Matawan             officialpayments.com
+   *   07721  Cliffwood/Aberdeen  aberdeennj.qscend.com
+   *
+   * Together that is 546 leads, 96 of them Grade A, that this module can never verify.
+   * They are reported as 'unsupported' — a different fact from "not on the roll" — and the
+   * review queue keeps them out of the list of things a person can settle, because nobody
+   * can resolve them by looking at the card.
+   *
+   * The way in, if it is ever wanted, is the one named at the top of this file: a
+   * township-supplied data extract. compareOwnerNames does the verification and does not
+   * care where the record came from.
+   *
+   * 08859 (Parlin) is shared Sayreville/Old Bridge — the Sayreville side verifies, the Old
+   * Bridge side will not match and falls through unverified.
+   */
 };
 
 export interface TaxRollRecord {
@@ -238,11 +258,43 @@ const STREET_SUFFIX: Record<string, string> = {
 export function normalizeStreet(s: unknown): string {
   let base = String(s ?? '')
     .toUpperCase()
+    /**
+     * Apostrophes are DELETED, not turned into spaces.
+     *
+     * Our source writes "100 John T O Leary Blvd"; South Amboy's roll writes
+     * "100 JOHN T O'LEARY BLVD". Deleting the apostrophe turns theirs into "OLEARY"; the
+     * single-letter join below turns ours into the same thing, so the two meet. Replacing
+     * it with a space instead would leave "O LEARY" against "OLEARY" and match nothing.
+     *
+     * Seven leads sit in that one building, across C2, C4, C6, C7 and C8. The curly
+     * apostrophe is covered too — it arrives from anything that has been through a word
+     * processor.
+     */
+    .replace(/['’ʼ`]/g, '')
     .replace(/[.,]/g, ' ')
     // "#" is a unit marker, not punctuation to be deleted: "24 Deepwater Cir # A".
     .replace(/#\s*/g, ' UNIT ')
     .replace(/\s+/g, ' ')
     .trim();
+
+  /**
+   * A lone letter joins the word after it: "O LEARY" → "OLEARY", "CHAIN O HILLS" → "OHILLS".
+   *
+   * This is the other half of the apostrophe fix. Whichever side kept the apostrophe and
+   * whichever dropped it, both now arrive at the same token — and because this runs on OUR
+   * address and on the roll's `propertyLoc` alike, a street that one side spells "Chain O'
+   * Hills" and the other "Chain O Hills" lands in the same place either way.
+   *
+   * Restricted to O, D and L — the letters that actually carry an apostrophe in a name.
+   * Any letter would be too eager: the roll's "100 JOHN T O'LEARY" becomes "JOHN T OLEARY"
+   * once the apostrophe goes, and a general rule then joins the middle initial as well to
+   * give "JOHN TOLEARY", which matches nothing on our side. A middle initial is not a
+   * name prefix.
+   *
+   * Requires the following word to be three characters or more, so "1611 L St" is untouched
+   * — a street type is not part of a name. Runs BEFORE the suffix table for that reason.
+   */
+  base = base.replace(/\b([ODL]) ([A-Z]{3,})\b/g, '$1$2');
 
   // "51B PIAZZA TASSO" → "51 PIAZZA TASSO UNIT B". Only when a single letter is glued to
   // the leading house number, which is the shape the source actually produces.

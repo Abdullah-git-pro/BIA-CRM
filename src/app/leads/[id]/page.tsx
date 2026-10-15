@@ -30,6 +30,7 @@ import GavelIcon from '@mui/icons-material/Gavel';
 import PersonSearchIcon from '@mui/icons-material/PersonSearch';
 import VerifiedIcon from '@mui/icons-material/Verified';
 import SkipTraceDialog from '@/components/SkipTraceDialog';
+import EmailVerdictMark, { verdictKey, type EmailVerdicts, type PersonRole } from '@/components/EmailVerdictMark';
 import UnclaimedAddressPanel from '@/components/UnclaimedAddressPanel';
 import CallDispositionPanel from '@/components/CallDispositionPanel';
 import QuoteOutcomePanel from '@/components/QuoteOutcomePanel';
@@ -132,6 +133,63 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
       <Typography variant="body2" color="text.secondary" noWrap sx={{ minWidth: 110, flexShrink: 0 }}>{label}</Typography>
       <Typography variant="body2" component="div" sx={{ fontWeight: 500, textAlign: 'right', minWidth: 0, wordBreak: 'break-word' }}>{value ?? '—'}</Typography>
     </Stack>
+  );
+}
+
+/**
+ * A person's email addresses, each with the identity verdict beside it.
+ *
+ * One per line rather than comma-joined: these carry a mark that has to attach to a
+ * particular address, and "a@x.com, b@y.com not theirs" leaves which one ambiguous at
+ * exactly the moment it matters. Three addresses is the common case and four lines is not a
+ * crowded card.
+ *
+ * An address with no mark has not been checked. That is most of the book — only C2 has been
+ * through the identity check — so absence is drawn as nothing at all rather than as a
+ * warning, and a clean card must never read as a row of silent failures.
+ */
+function EmailList({ label, addresses, verdicts, role }: {
+  label: string;
+  addresses: string[];
+  verdicts: EmailVerdicts;
+  /** Whose line this is. The verdict is looked up for THIS person, never the other one. */
+  role: PersonRole;
+}) {
+  return (
+    /*
+      Full width with the label above, not a Row.
+
+      A Row keeps 110px for the label and right-aligns the value, which leaves about 190px —
+      narrower than an ordinary address, so bernice.curto@gmail.com broke across two lines
+      mid-word and the tick ended up under it. These are lists rather than single values and
+      they get the panel's whole width.
+    */
+    <Box sx={{ py: 0.5 }}>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 0.25 }}>{label}</Typography>
+      {addresses.map((e) => {
+        const v = verdicts[verdictKey(e, role)];
+        return (
+          /*
+            Inline, not a flex row.
+
+            As a flex row the mark was its own item, so an address that filled the column
+            pushed the tick onto a line of its own and a card read as a column of stray ✓s
+            with nothing to attach them to. Inline text keeps the mark immediately after the
+            last character, wherever that lands.
+          */
+          <Box key={e} sx={{ fontSize: 14, fontWeight: 500, lineHeight: 1.75, wordBreak: 'break-word' }}>
+            {/* Struck through when it is somebody else's: the address stays readable — it is
+                still what the trace returned — but it should not look sendable. */}
+            <Box component="span" sx={v?.nameMatch === false
+              ? { color: '#8a94a6', textDecoration: 'line-through' }
+              : undefined}>
+              {e}
+            </Box>
+            <EmailVerdictMark verdict={v} />
+          </Box>
+        );
+      })}
+    </Box>
   );
 }
 
@@ -290,6 +348,45 @@ export default function LeadDetailPage() {
   const [enriching, setEnriching] = useState(false);
   const [batchTracing, setBatchTracing] = useState(false);
   const [skipDialogOpen, setSkipDialogOpen] = useState(false);
+
+  /**
+   * Identity verdicts for this lead's addresses, fetched when the card opens.
+   *
+   * It used to wait for the skip-trace dialog, which is why the verdicts could be paid for
+   * and still be invisible: the card body showed the same addresses as plain text, so a
+   * dead one looked identical to a good one unless somebody thought to open a popup.
+   *
+   * Still its own request rather than a join on the lead payload — only C2 has been graded,
+   * so for most cards this returns nothing, and the join would be paid by every screen that
+   * reads a lead. One small fetch per card is the cheaper side of that trade.
+   */
+  const [verifiedEmails, setVerifiedEmails] = useState<EmailVerdicts>({});
+  useEffect(() => {
+    if (!lead?.propertyId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/leads/${lead.propertyId}/contact-verification`);
+        const json = await res.json();
+        if (cancelled || !json.success) return;
+        const map: EmailVerdicts = {};
+        for (const e of (json.email ?? [])) {
+          // Keyed by address AND role: the same address can be attributed to both people
+          // and come back as one person's and not the other's.
+          const role = e.role === 'coInsured' ? 'coInsured' : 'insured';
+          map[verdictKey(String(e.value), role)] = {
+            nameMatch: e.nameMatch, isValid: e.isValid,
+            ageScore: e.ageScore ?? null, contactGrade: e.contactGrade ?? null,
+          };
+        }
+        setVerifiedEmails(map);
+      } catch {
+        // A failed read leaves the marks off, which is the same as never checked — the one
+        // thing it must not do is draw an address as somebody else's on no evidence.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [lead?.propertyId]);
   const [lostReason, setLostReason] = useState('');
   const [lostStage, setLostStage] = useState('');
   const [producerNote, setProducerNote] = useState('');
@@ -864,6 +961,39 @@ export default function LeadDetailPage() {
   const ownerName = [lead.owner1FirstName, lead.owner1LastName].filter(Boolean).join(' ') || '—';
   const coInsuredName = [lead.owner2FirstName, lead.owner2LastName].filter(Boolean).join(' ');
 
+  /**
+   * The addresses attributed to each person, preferring the computed split.
+   *
+   * insuredEmailsOnFile / coInsuredEmailsOnFile come from recipients.service — the same rule
+   * the campaign push uses, so the card shows what would actually be mailed. The slot
+   * columns are the fallback for a payload that predates them; without it an older cached
+   * lead would silently show no addresses at all, which reads as "none on file" rather than
+   * "this page is stale".
+   *
+   * ── An EMPTY list is an answer, not a missing one ─────────────────────────
+   * The fallback fires only when the field is absent, never when it comes back empty.
+   * Treating [] as missing put Pamela Divino's pamrdivino@aol.com under the insured off the
+   * raw email1 column when the rule attributes it to Ralph alone — the card would have
+   * claimed an address for a person the campaign will never mail it to.
+   */
+  const dedupe = (xs: unknown[]) => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const x of xs) {
+      const e = String(x ?? '').trim();
+      if (!e || seen.has(e.toLowerCase())) continue;
+      seen.add(e.toLowerCase());
+      out.push(e);
+    }
+    return out;
+  };
+  const insuredAddrs = dedupe(
+    Array.isArray(lead.insuredEmailsOnFile) ? lead.insuredEmailsOnFile : [lead.email1, lead.email2],
+  );
+  const coInsuredAddrs = dedupe(
+    Array.isArray(lead.coInsuredEmailsOnFile) ? lead.coInsuredEmailsOnFile : [lead.owner2Email],
+  );
+
   // The only skip trace left is the Tracerfy ENHANCED tier, which keys off the named
   // insured — without a first AND last name on file it cannot run at all (Frank Aug-2026).
   const insuredNameOnFile = !!String(lead.owner1FirstName ?? '').trim() && !!String(lead.owner1LastName ?? '').trim();
@@ -1171,7 +1301,37 @@ export default function LeadDetailPage() {
                 <Row label="Co-Insured DOB" value={dobDisplay(lead.owner2Dob)} />
               )}
               {lead.owner2Phone && <Row label="Co-Insured Phone" value={lead.owner2Phone} />}
-              {lead.owner2Email && <Row label="Co-Insured Email" value={lead.owner2Email} />}
+
+              {/*
+                ── The addresses, with whose they are ────────────────────────────
+                Every address the card attributes to each person, each carrying its identity
+                verdict. Both halves of that matter.
+
+                The LIST, because the single slot column is not what a campaign sends to:
+                C2's cards hold 192 attributed addresses against 134 in email1/email2/
+                owner2Email, so showing the slot alone hid a third of what we actually mail.
+
+                The MARK, because 25 of C2's graded addresses are registered to somebody
+                else, and until now that could only be seen by opening the skip-trace popup.
+                An address with no mark has not been checked — it is not a failure, and most
+                of the book is in that state.
+              */}
+              {!!insuredAddrs.length && (
+                <EmailList
+                  label={insuredAddrs.length > 1 ? `Insured Emails (${insuredAddrs.length})` : 'Insured Email'}
+                  addresses={insuredAddrs}
+                  verdicts={verifiedEmails}
+                  role="insured"
+                />
+              )}
+              {!!coInsuredAddrs.length && (
+                <EmailList
+                  label={coInsuredAddrs.length > 1 ? `Co-Insured Emails (${coInsuredAddrs.length})` : 'Co-Insured Email'}
+                  addresses={coInsuredAddrs}
+                  verdicts={verifiedEmails}
+                  role="coInsured"
+                />
+              )}
               <Row label="Owner Occupied" value={lead.ownerOccupied ? 'Yes' : 'No'} />
               <Row label="Absentee Owner" value={lead.absenteeOwner ? 'Yes' : 'No'} />
               {mailAddress && (
@@ -2443,6 +2603,7 @@ export default function LeadDetailPage() {
           coInsuredEmails: lead.coInsuredEmailsOnFile ?? null,
           otherEmails: lead.otherHouseholdEmails ?? null,
         }}
+        verifiedEmails={verifiedEmails}
       />
 
       <Snackbar

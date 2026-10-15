@@ -47,3 +47,7 @@ files-for-claude
 Test
 
 backups/
+
+# Throwaway tsc output for the verification scripts — compiled from src, never edited.
+.verify-build/
+.reverify-build/

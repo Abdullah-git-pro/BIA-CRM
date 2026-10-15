@@ -99,7 +99,19 @@ export function verifyCoInsured(lead: {
     };
   }
 
-  const cmp = compareOwnerNames({ first, last }, theirs);
+  /**
+   * Compared against the WHOLE deed line, not just the second party.
+   *
+   * parseRollOwners returns at most two people, so a deed naming three — "LAZBIN, NAUM &
+   * ALEKSANDR & LAZBINA," — was only ever checked against Aleksandr, and Olga Lazbina came
+   * back a mismatch while sitting third on her own deed. compareOwnerNames walks every
+   * party, so handing it the raw string asks the question we actually mean: is the card's
+   * second person named anywhere on this record?
+   *
+   * `theirs` is still what gets reported, because the reviewer needs to see the person we
+   * expected rather than the whole line.
+   */
+  const cmp = compareOwnerNames({ first, last }, roll);
   /**
    * 'unknown' folded into 'partial' rather than given its own status.
    *

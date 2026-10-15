@@ -1,5 +1,5 @@
 import { sql } from '@/lib/neon';
-import { numbersOnCard } from './callLog.service';
+import { numbersOnCard, notTheirsByLead } from './callLog.service';
 
 /**
  * How much of the calling has actually been done — per number, not per card.
@@ -133,9 +133,13 @@ export async function callCoverage(opts: {
     byOutcome: {},
   };
 
+  // Same definition of "a number on this card" as the lead card and the Phone screen.
+  const notTheirsMap = await notTheirsByLead();
+
   for (const lead of leads) {
     const leadId = String(lead.id);
-    const onCard = numbersOnCard(lead);
+    const notTheirs = notTheirsMap.get(leadId) ?? new Set();
+    const onCard = numbersOnCard(lead).filter((n) => !notTheirs.has(n.number));
     const tried = byLead.get(leadId) ?? new Map();
 
     const numbers: NumberCoverage[] = onCard.map((n) => {

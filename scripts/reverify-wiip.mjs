@@ -24,10 +24,10 @@
  * once. So it happens only behind --include-unchecked, one cohort at a time.
  */
 import { execSync } from 'child_process';
-import { mkdtempSync, readFileSync, existsSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
+import { join, resolve } from 'path';
 import { createRequire } from 'module';
+import Module from 'module';
 import { neon } from '@neondatabase/serverless';
 
 const arg = (n, d) => (process.argv.find((a) => a.startsWith(`--${n}=`)) ?? `--${n}=${d}`).slice(n.length + 3);
@@ -58,15 +58,35 @@ const sql = async (s, ...v) => {
   throw last;
 };
 
-const out = mkdtempSync(join(tmpdir(), 'bia-reverify-'));
-execSync(
-  `npx tsc src/services/taxRoll.service.ts src/services/ownerNameMatch.service.ts`
-  + ` --outDir "${out}" --module commonjs --target es2022 --moduleResolution node --skipLibCheck`,
-  { stdio: 'pipe' },
-);
+/**
+ * Built in the project with the @/ alias resolved, because coInsuredVerify reaches into
+ * @/lib/neon — and it has to be loaded here. The co-insured verdict is derived from the
+ * same roll string this script rewrites, so the two must move together; see the end.
+ */
+const out = resolve('.reverify-build');
+mkdirSync(out, { recursive: true });
+const tsconfigPath = join(out, 'tsconfig.json');
+writeFileSync(tsconfigPath, JSON.stringify({
+  compilerOptions: {
+    target: 'es2022', module: 'commonjs', moduleResolution: 'node',
+    skipLibCheck: true, esModuleInterop: true,
+    baseUrl: resolve('.'), paths: { '@/*': ['src/*'] }, outDir: out,
+  },
+  include: [
+    resolve('src/services/taxRoll.service.ts'),
+    resolve('src/services/coInsuredVerify.service.ts'),
+  ],
+}));
+execSync(`npx tsc -p "${tsconfigPath}"`, { stdio: 'pipe' });
 const req = createRequire(import.meta.url);
-const { verifyOwnerName, WIPP_BY_ZIP } = req(join(out, 'taxRoll.service.js'));
-const { compareOwnerNames } = req(join(out, 'ownerNameMatch.service.js'));
+const origResolve = Module._resolveFilename;
+Module._resolveFilename = function (request, ...rest) {
+  if (request.startsWith('@/')) request = join(out, request.slice(2));
+  return origResolve.call(this, request, ...rest);
+};
+const { verifyOwnerName, WIPP_BY_ZIP } = req(join(out, 'services/taxRoll.service.js'));
+const { compareOwnerNames } = req(join(out, 'services/ownerNameMatch.service.js'));
+const { backfillCoInsuredVerify } = req(join(out, 'services/coInsuredVerify.service.js'));
 
 const C1 = '2026-10-05';
 const C8 = '2026-11-23';
@@ -172,6 +192,28 @@ if (MODE === 'relookup' || MODE === 'both') {
     }
   }
   console.log(`\nrelookup: ${resolved} now on the roll, ${still} still not found, ${failed} could not be asked`);
+}
+
+/**
+ * ── The co-insured verdict follows the insured one, always ──────────────────
+ *
+ * Both are derived from the SAME stored string, ownerVerifyName — the roll returns the whole
+ * deed line, "SCOTTO, DIANE & MICHAEL", and the two verdicts are two readings of it. When
+ * this script rewrote the insured side on 13 Oct and nothing recomputed the other, 14 C2
+ * cards ended up with a fresh insured verdict and a co-insured one that had never been
+ * computed at all — including PANARIELLO & JANUS, THOROGOOD & WALKER and BALESTRIERI & ENZA,
+ * where the roll had handed us a second person nobody could see.
+ *
+ * It costs nothing: no roll call, no credits, the answer is already in the column. So it is
+ * not an option or a follow-up step — it runs whenever the insured side was written.
+ */
+if (APPLY) {
+  const cohorts = COHORT === 'all' ? [] : [COHORT];
+  const co = await backfillCoInsuredVerify({ cohorts });
+  console.log(`\nco-insured recomputed from the same roll strings: ${co.written} of ${co.checked}`);
+  for (const [k, v] of Object.entries(co.byStatus).sort((a, b) => b[1] - a[1])) {
+    console.log(`   ${String(v).padStart(4)}  ${k}`);
+  }
 }
 
 console.log(APPLY ? '\napplied.' : '\nDRY RUN — nothing was written. Re-run with --apply.');

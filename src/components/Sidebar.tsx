@@ -106,6 +106,9 @@ export default function Sidebar({ collapsed, onToggle, mobileOpen = false, onMob
       // Beside Cohorts, because it answers the question the ledger raises: the ledger says
       // what a week HAS, this says how far through the pipeline that week has got.
       { label: 'Pipeline',    icon: <AccountTreeIcon />,     path: '/admin/pipeline' },
+      // Directly under Pipeline: that screen counts what needs a person, this is where
+      // the work itself is. Separating them by half a menu would hide the follow-on.
+      { label: 'Needs a person', icon: <PersonSearchIcon />, path: '/admin/review-queue' },
       { label: 'QC Reports',  icon: <AssessmentIcon />,      path: '/admin/qc' },
       { label: 'Outreach',    icon: <InsightsIcon />,        path: '/admin/outreach' },
       { label: 'Weekly Pull', icon: <EventRepeatIcon />,     path: '/admin/pull-weekly' },

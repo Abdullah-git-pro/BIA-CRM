@@ -164,6 +164,36 @@ mg('card initial is filled from the roll, first token only', { first: 'S', last:
 mg('card given name wins over the roll', { first: 'Sahana', last: 'Boddapati' }, { first: 'S', last: 'Boddapati' }, 'Sahana Boddapati');
 mg('empty card name falls back to the roll', { first: '', last: '' }, { first: 'Marisol', last: 'Perez' }, 'Marisol Perez');
 
+// ── The insured named SECOND on the deed (review queue, 14 Oct) ─────────────
+// The roll lists a shared surname once. Splitting on "&" without inheriting it made the
+// bare second token a surname, so a man did not match his own deed and was queued for a
+// human to decide whether he was his own relative.
+console.log('\nInsured named second on the deed:');
+t('shared surname, insured is second', { first: 'Dylan', last: 'Rothstein' }, 'ROTHSTEIN, ALYSSA & DYLAN', 'match');
+t('same, with a stop in the surname', { first: 'Marie', last: 'St Fleur' }, 'ST. FLEUR, LEONARD & MARIE', 'match');
+/*
+ * Known limit, recorded rather than hidden. "ELLIS, GREGORY W, JESSICA C & CORINNE" names
+ * three owners, and the third given name sits inside the FIRST party behind a comma — the
+ * split is on "&", so Jessica is never a party of her own. It lands on 'partial', which is
+ * honest: the surname matches and a person can confirm which of three she is. Raising it to
+ * 'match' would need the first party split on commas too, which also has to not break
+ * "SIMONE, JENNIFER, ETAL" and "GOUBERT, EDOUARD T P".
+ */
+t('three names on the deed — partial, not match', { first: 'Jessica', last: 'Ellis' }, 'ELLIS, GREGORY W,JESSICA C &CORINNE', 'partial');
+// The two that SHOULD still need a person — the fix must not swallow these.
+t('a different given name is still partial', { first: 'Reva', last: 'Feldman' }, 'FELDMAN, MARTIN', 'partial');
+t('a different family is still a mismatch', { first: 'Rosanna', last: 'Hendrick' }, 'EHTESHAM, SHEHRYAR & KHAN, RAIHA', 'mismatch');
+
+// ── Apostrophes in surnames (co-insured queue, 14 Oct) ──────────────────────
+// An apostrophe became a space and coreTokens then dropped the lone "O" as a middle
+// initial, so the roll's O'CONNELL was compared as plain CONNELL and Laura O'Connell read
+// as a different surname from herself.
+console.log('\nApostrophes in surnames:');
+t("O'Connell against the roll's apostrophe", { first: 'Laura', last: "O'Connell" }, "O'CONNELL, DANIEL & LAURA", 'match');
+t('the same with no apostrophe on our side', { first: 'Laura', last: 'OConnell' }, "O'CONNELL, DANIEL & LAURA", 'match');
+t('a stop in the surname still matches', { first: 'William', last: 'St Laurent' }, 'ST. LAURENT, FLORENCE & WILLIAM', 'match');
+t('and run together, as our source writes it', { first: 'William', last: 'Stlaurent' }, 'ST. LAURENT, FLORENCE & WILLIAM', 'match');
+
 
 console.log(`\n${pass} passed, ${failures.length} failed`);
 if (failures.length) { failures.forEach((f) => console.error('  ' + f)); process.exit(1); }

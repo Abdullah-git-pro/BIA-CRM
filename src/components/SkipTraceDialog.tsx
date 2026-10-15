@@ -2,13 +2,14 @@
 
 import {
   Dialog, DialogTitle, DialogContent, IconButton, Box, Typography, Chip, Stack, Divider, Link,
-  Accordion, AccordionSummary, AccordionDetails,
+  Accordion, AccordionSummary, AccordionDetails, Tooltip,
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import PhoneIcon from '@mui/icons-material/Phone';
 import EmailIcon from '@mui/icons-material/Email';
 import PersonSearchIcon from '@mui/icons-material/PersonSearch';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import EmailVerdictMark, { verdictKey, verdictForEither, type EmailVerdicts } from './EmailVerdictMark';
 
 interface SkipTraceDialogProps {
   open: boolean;
@@ -37,6 +38,11 @@ interface SkipTraceDialogProps {
     coInsuredEmails?: string[] | null;
     otherEmails?: string[] | null;
   };
+  /**
+   * Identity verdicts keyed by address AND whose we asked about. Absent means never checked
+   * — which is most of the book today, and must not be drawn as a failure.
+   */
+  verifiedEmails?: EmailVerdicts;
 }
 
 function fmtPhone(p?: string): string {
@@ -76,7 +82,7 @@ const HANDLED_KEYS = new Set([
   '_foundBy', '_archived', 'batchDataName',
 ]);
 
-export default function SkipTraceDialog({ open, onClose, data, tracedAt, onFile }: SkipTraceDialogProps) {
+export default function SkipTraceDialog({ open, onClose, data, tracedAt, onFile, verifiedEmails }: SkipTraceDialogProps) {
   /**
    * Current AND archived results, each labelled with the tool that produced it.
    *
@@ -146,14 +152,35 @@ export default function SkipTraceDialog({ open, onClose, data, tracedAt, onFile 
                 insured-only rule exists to prevent, so the dialog has to make the
                 distinction the rule makes.
               */}
+              {/*
+                Each address carries its own verdict, because the list is not uniform.
+
+                "Belongs to the insured" is our own attribution from the trace payload; the
+                identity check asks the provider whether the address is registered to that
+                person, and on C2 it disagreed on 25 of 192. An address a campaign is about
+                to use should say which of the two it is, and an unchecked one must look
+                different from a failed one — most of the book has never been checked.
+              */}
               {!!onFile.insuredEmails?.length && (
                 <Typography variant="body2" sx={{ color: '#166534' }}>
-                  <b>Insured&apos;s emails ({onFile.insuredEmails.length}):</b> {onFile.insuredEmails.join(', ')}
+                  <b>Insured&apos;s emails ({onFile.insuredEmails.length}):</b>{' '}
+                  {onFile.insuredEmails.map((e, i) => (
+                    <Box component="span" key={e}>
+                      {i ? ', ' : ''}{e}
+                      <EmailVerdictMark verdict={verifiedEmails?.[verdictKey(e, 'insured')]} />
+                    </Box>
+                  ))}
                 </Typography>
               )}
               {!!onFile.coInsuredEmails?.length && (
                 <Typography variant="body2">
-                  <b>Co-insured&apos;s emails ({onFile.coInsuredEmails.length}):</b> {onFile.coInsuredEmails.join(', ')}
+                  <b>Co-insured&apos;s emails ({onFile.coInsuredEmails.length}):</b>{' '}
+                  {onFile.coInsuredEmails.map((e, i) => (
+                    <Box component="span" key={e}>
+                      {i ? ', ' : ''}{e}
+                      <EmailVerdictMark verdict={verifiedEmails?.[verdictKey(e, 'coInsured')]} />
+                    </Box>
+                  ))}
                 </Typography>
               )}
               {!!onFile.otherEmails?.length && (
@@ -283,6 +310,16 @@ export default function SkipTraceDialog({ open, onClose, data, tracedAt, onFile 
                          * Coverage is partial and growing — none in August, 9% of emails
                          * traced in September, 25% in October — so absent is genuinely
                          * "not stated" and is left blank rather than shown as a failure.
+                         *
+                         * ── Why it names the vendor instead of saying "verified" ──────────
+                         * It used to read "verified", the same word the paid identity check
+                         * uses, and the two disagree: on property 152665880,
+                         * carol_flres@hotmail.com carried a green "verified" here while the
+                         * identity check said the address belongs to somebody else. One
+                         * screen cannot call two opposite findings by the same name. Naming
+                         * the source turns a contradiction into what it actually is — two
+                         * providers who do not agree — and leaves "verified" meaning the one
+                         * check that decides whether we campaign to an address.
                          */
                         const verified = typeof em === 'string' ? undefined : em?.verified;
                         const rank = typeof em === 'string' ? undefined : em?.rank;
@@ -290,13 +327,14 @@ export default function SkipTraceDialog({ open, onClose, data, tracedAt, onFile 
                           <Stack key={j} direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
                             <EmailIcon fontSize="small" color="action" />
                             <Link href={`mailto:${addr}`}>{addr}</Link>
+                            <EmailVerdictMark verdict={verdictForEither(verifiedEmails ?? {}, String(addr ?? ''))} />
                             {verified === true && (
-                              <Chip size="small" color="success" label="verified"
-                                title="Tracerfy confirmed this address. Not the same as a mailbox check — it says the address is theirs, not that it is live." />
+                              <Chip size="small" variant="outlined" color="success" label="Tracerfy: confirmed"
+                                title="The TRACE vendor says this address is theirs. This is not the paid identity check — where the two disagree, the identity check is the one that decides." />
                             )}
                             {verified === false && (
-                              <Chip size="small" variant="outlined" color="warning" label="not verified"
-                                title="Tracerfy returned this address but could not confirm it." />
+                              <Chip size="small" variant="outlined" color="warning" label="Tracerfy: unconfirmed"
+                                title="Tracerfy returned this address but could not confirm it. Not a finding that it is wrong." />
                             )}
                             {rank != null && (
                               <Typography variant="caption" color="text.secondary">rank {rank}</Typography>
@@ -348,9 +386,9 @@ export default function SkipTraceDialog({ open, onClose, data, tracedAt, onFile 
                                   <Stack key={`e${j}`} direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
                                     <Link href={`mailto:${em.email}`} sx={{ fontSize: 12 }}>{em.email}</Link>
                                     {em.verified === true && (
-                                      <Chip size="small" color="success" label="verified"
+                                      <Chip size="small" variant="outlined" color="success" label="Tracerfy: confirmed"
                                         sx={{ height: 18, fontSize: 10 }}
-                                        title="Tracerfy confirmed this address belongs to them." />
+                                        title="The trace vendor says this address belongs to them. Not the paid identity check." />
                                     )}
                                   </Stack>
                                 ))}

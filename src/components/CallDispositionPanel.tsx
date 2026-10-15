@@ -43,7 +43,18 @@ type State = {
     dnc?: boolean; tcpa?: boolean; rank?: number | null; type?: string | null;
     /** Whose number it is, by name — who to ask for when it answers. */
     person?: string | null;
+    /**
+     * The identity and liveness check, when this number has had one. Null = never checked,
+     * which must read differently from "checked and failed".
+     */
+    verified?: {
+      nameMatch: boolean | null;
+      activityScore: number | null;
+      contactGrade: string | null;
+    } | null;
   }>;
+  /** Numbers withheld because they are registered to somebody else. */
+  notTheirsCount?: number;
   blockedReason: string | null;
 };
 
@@ -520,6 +531,14 @@ export default function CallDispositionPanel({ leadId }: { leadId: string }) {
                      */
                     isDeepTail(d.rank) ? 'DEEP IN THE VENDOR LIST — a long shot, try the others first' : null,
                     d.dnc ? 'ON THE DO-NOT-CALL LIST' : null,
+                    // Numbers registered to somebody else are withheld entirely now, so a
+                    // number that reaches this list has either matched or never been checked.
+                    d.verified?.nameMatch === true ? 'registered to this person' : null,
+                    d.verified && d.verified.activityScore != null
+                      ? (d.verified.activityScore >= 70
+                        ? `line is active (${d.verified.activityScore}/100)`
+                        : `little recent activity (${d.verified.activityScore}/100) — often a disconnected line`)
+                      : null,
                     last
                       ? `last tried ${easternDisplay(last.attemptedAt)} — ${CALL_OUTCOME_LABEL[last.outcome]}`
                       : 'never dialled',
@@ -528,6 +547,24 @@ export default function CallDispositionPanel({ leadId }: { leadId: string }) {
                   <Chip
                     label={
                       `${fmtPhone(d.number)}${d.dnc ? ' · DNC' : ''}`
+                      /*
+                       * Three states, and all three have to be legible on the chip itself,
+                       * because on a phone nobody hovers for a tooltip.
+                       *
+                       *   ✓ verified   checked, registered to this person, line is active
+                       *   quiet line   theirs, but the line has shown little recent activity
+                       *   (nothing)    never checked — which is NOT a failure
+                       *
+                       * The last one is most of the book: only C2 has been graded, and a
+                       * card showing twelve numbers where two are confirmed and ten are
+                       * simply unexamined looked, before this, like twelve equal numbers.
+                       * "Which of these can I trust" was unanswerable from the screen.
+                       */
+                      + (d.verified?.nameMatch === true
+                        && (d.verified.activityScore ?? 0) >= 70 ? ' · ✓ verified' : '')
+                      + (d.verified && d.verified.nameMatch !== false
+                        && d.verified.activityScore != null && d.verified.activityScore < 70
+                        ? ' · quiet line' : '')
                       + (last ? ` · ${shortOutcome(last.outcome)} ${sinceLabel(last.attemptedAt)}` : '')
                     }
                     size="small"
@@ -536,8 +573,15 @@ export default function CallDispositionPanel({ leadId }: { leadId: string }) {
                     sx={number === d.number
                       ? { bgcolor: d.dnc ? '#b3261e' : '#1565c0', color: '#fff', fontWeight: 700 }
                       : d.dnc
+                        // Red stays with do-not-call: that is a rule, and it outranks a
+                        // quality signal even on a number that also verified.
                         ? { borderColor: '#b3261e', color: '#b3261e', fontWeight: 700 }
-                        : last
+                        : d.verified?.nameMatch === true && (d.verified.activityScore ?? 0) >= 70
+                          // Green only for a number that has actually been checked and
+                          // passed. An unchecked number keeps the ordinary blue, so the
+                          // two can never be mistaken for each other.
+                          ? { borderColor: '#166534', color: '#166534', fontWeight: 700 }
+                          : last
                           // Tried already: muted, so an untried number is the one that
                           // stands out. Not disabled — trying again is often the right move.
                           ? { borderColor: '#c6ccd6', color: '#6b7280' }
@@ -562,6 +606,47 @@ export default function CallDispositionPanel({ leadId }: { leadId: string }) {
               are on the do-not-call list. They are listed last and flagged — check before dialling one.
             </Typography>
           )}
+
+          {/*
+            Say that numbers were withheld, and why.
+
+            A list that is quietly shorter than the card is how somebody concludes the screen
+            is wrong and goes back to working from a spreadsheet. Of the 221 calls we checked
+            this against, no number registered to somebody else had ever reached the insured —
+            but the person dialling is entitled to know one was taken out.
+          */}
+          {!!state.notTheirsCount && (
+            <Typography variant="caption" sx={{ display: 'block', color: '#8a5a00', mb: 1.5 }}>
+              {state.notTheirsCount} {state.notTheirsCount === 1 ? 'number is' : 'numbers are'} not
+              shown — registered to somebody else, not to this household.
+            </Typography>
+          )}
+
+          {/*
+            How much of this list has actually been checked.
+
+            Without it, "no green ticks" reads as "nothing here is any good" when it usually
+            means "nobody has looked yet" — only C2 has been graded. Saying which of the two
+            it is costs one line and stops a caller distrusting numbers that are simply
+            unexamined.
+          */}
+          {(() => {
+            const checked = state.dialable.filter((d) => d.verified).length;
+            const good = state.dialable.filter(
+              (d) => d.verified?.nameMatch === true && (d.verified.activityScore ?? 0) >= 70,
+            ).length;
+            if (!state.dialable.length) return null;
+            return (
+              <Typography variant="caption" sx={{ display: 'block', color: '#5a6675', mb: 1.5 }}>
+                {checked === 0
+                  ? 'None of these numbers has been identity-checked yet — no tick does not mean a bad number.'
+                  : `${good} of these ${state.dialable.length} ${good === 1 ? 'is' : 'are'} verified as this household's and active`
+                    + (checked < state.dialable.length
+                      ? `. The other ${state.dialable.length - checked} have not been checked yet.`
+                      : '.')}
+              </Typography>
+            );
+          })()}
 
           <Typography variant="caption" sx={{ fontWeight: 700, display: 'block', mb: 0.5 }}>
             What happened? One tap — it is timestamped for you.

@@ -68,7 +68,19 @@ function norm(s: unknown): string {
   return String(s ?? '')
     .normalize('NFD').replace(/[̀-ͯ]/g, '')
     .toUpperCase()
-    .replace(/[.,'`]/g, ' ')
+    /**
+     * Apostrophes are DELETED; stops and commas become spaces.
+     *
+     * Turning an apostrophe into a space split "O'CONNELL" into "O CONNELL", and coreTokens
+     * then dropped the "O" as a middle initial — so the roll's O'CONNELL was stored and
+     * compared as plain "CONNELL", and Laura O'Connell read as a different surname from
+     * herself. Deleting it gives "OCONNELL" on both sides, which is the same woman however
+     * either source types her name. The curly apostrophe is covered for the same reason as
+     * in the address normaliser: it arrives from anything that has been through a word
+     * processor.
+     */
+    .replace(/['’ʼ`]/g, '')
+    .replace(/[.,]/g, ' ')
     .replace(/-/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -409,7 +421,31 @@ export function compareOwnerNames(
 
   // ── Person. A record may list two parties; a match against either is a match.
   const ourSide = { first: coreTokens(ourFirstRaw).join(' '), last: coreTokens(ourLastRaw).join(' ') };
-  const parties = splitParties(theirsDisplay);
+
+  /**
+   * The parties are read the way parseRollOwners reads them, not re-split here.
+   *
+   * The roll lists a shared surname once: "ROTHSTEIN, ALYSSA & DYLAN". Splitting on "&" and
+   * handing each half to splitPerson makes the second party the bare token "DYLAN", which is
+   * then taken as a SURNAME with no given name — so Dylan Rothstein did not match his own
+   * deed and came back 'partial', "surname matches but the record shows ALYSSA".
+   *
+   * parseRollOwners has inherited that surname since July. The two have simply never been
+   * asked the same question, and this file held both. On C1–C8 Grade A it put Dylan
+   * Rothstein, Marie St Fleur, Michael Tokman and Dalbir Singh into a review queue to decide
+   * whether they are their own relative.
+   *
+   * The raw split is kept alongside it: parseRollOwners returns at most two people, and a
+   * record like "ELLIS, GREGORY W, JESSICA C & CORINNE" names three. A match against any
+   * reading is a match, so adding candidates can only find a person we were missing.
+   */
+  const rollOwners = parseRollOwners(theirsDisplay);
+  const parties = [
+    ...[rollOwners.person1, rollOwners.person2]
+      .filter((p): p is RollPerson => !!p)
+      .map((p) => `${p.last}, ${p.first}`),
+    ...splitParties(theirsDisplay),
+  ];
 
   let best: NameComparison = { result: 'mismatch', detail: 'Name does not match the tax record', ours: oursDisplay, theirs: theirsDisplay };
 

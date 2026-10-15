@@ -14,7 +14,7 @@ import {
 // numbersOnCard derives the card's dialable numbers from the trace payload, which is the
 // only correct source for the stop rule's third condition. callLog.service does not import
 // this file, so there is no cycle.
-import { numbersOnCard } from './callLog.service';
+import { numbersOnCard, notTheirsByLead } from './callLog.service';
 import { cohortLabel } from './cohort';
 import { classifyGradeChange } from './gradeChangeReason';
 import { agencyWebsite } from './mergeVars.service';
@@ -769,8 +769,21 @@ export async function getQcReport(type: QcReportType, params: QcReportParams = {
                "skipTraceData", "emailsAll"
           FROM "Lead" WHERE "id" = ANY(${needsCardNumbers}::text[])` as Array<Record<string, unknown>>;
       assertRecipientCols(cards[0], 'call_outcome unreachable rule');
+      /**
+       * Minus numbers an identity check attributed to somebody else.
+       *
+       * The unreachable rule turns on how many numbers a card HAS. A card whose numbers all
+       * belong to strangers has none to ring, and counting them would hold it short of the
+       * rule for ever — waiting on attempts nobody can make, and never reaching the
+       * direct-mail route that is the whole point of declaring a card unreachable.
+       */
+      const notTheirsMap = await notTheirsByLead();
       for (const c of cards) {
-        cardNumberCount.set(String(c.id), numbersOnCard(c).length);
+        const notTheirs = notTheirsMap.get(String(c.id)) ?? new Set<string>();
+        cardNumberCount.set(
+          String(c.id),
+          numbersOnCard(c).filter((n) => !notTheirs.has(n.number)).length,
+        );
       }
     }
 

@@ -6,11 +6,11 @@ import { getPipelineStatus } from '@/services/pipelineStatus.service';
  *
  * Where every cohort has got to across REAPI → WIIP → skip trace.
  *
- * Read-only, and there is deliberately no POST beside it. Running the roll over a cohort
- * leans on a small municipal service and running traces spends credits; the rule set on
- * 13 Oct is that neither happens without somebody asking for it. Making this endpoint
- * capable of starting work would put a "run everything" button one fetch away from a
- * screen whose whole purpose is to be looked at.
+ * Read-only. Starting work is ./run, which is a separate endpoint on purpose: it takes one
+ * cohort and one stage at a time, it refuses the skip trace outright, and the contact check
+ * will tell you what it would cost before it spends anything. Letting the screen's own read
+ * also start things would put a "run everything" button one fetch away from the view whose
+ * whole purpose is to be looked at.
  */
 export const dynamic = 'force-dynamic';
 
@@ -36,6 +36,8 @@ export async function GET(request: NextRequest) {
         coNeedsReview: sum('coNeedsReview'),
         traced: sum('traced'),
         tracedBeforeRoll: sum('tracedBeforeRoll'),
+        contactsCards: sum('contactsCards'),
+        contactsNotTheirs: sum('contactsNotTheirs'),
       },
     });
   } catch (err) {
