@@ -16,7 +16,14 @@ const JWT_SECRET = new TextEncoder().encode(
 // has no CRM session to offer. Each route under it verifies that secret in constant time
 // and fails closed in production — see outreach-reconcile. The same rule as above holds:
 // nothing joins this list without carrying its own equivalent check.
-const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/enrich', '/api/webhooks/campaign', '/c/', '/api/cta/', '/api/cron/'];
+// '/api/webhooks/lob' is public for the same reason as the campaign one: the print vendor
+// delivers tracking events — in transit, delivered, returned to sender — and has no CRM
+// session to present. It carries its own auth, and a stronger one: every request is signed
+// HMAC-SHA256 over `${timestamp}.${rawBody}` with the webhook secret, compared in constant
+// time, with a five-minute replay window. A missing secret verifies nothing and therefore
+// refuses everything, so it fails closed. It is the only separation between a real delivery
+// and a forged one — and a forged 'returned_to_sender' would retire a good address.
+const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/enrich', '/api/webhooks/campaign', '/api/webhooks/lob', '/c/', '/api/cta/', '/api/cron/'];
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;

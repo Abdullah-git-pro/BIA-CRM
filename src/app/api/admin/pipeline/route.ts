@@ -38,6 +38,8 @@ export async function GET(request: NextRequest) {
         tracedBeforeRoll: sum('tracedBeforeRoll'),
         contactsCards: sum('contactsCards'),
         contactsNotTheirs: sum('contactsNotTheirs'),
+        mailReady: sum('mailReady'),
+        mailAwaitingRating: sum('mailAwaitingRating'),
       },
     });
   } catch (err) {

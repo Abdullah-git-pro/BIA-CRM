@@ -1,5 +1,6 @@
 import { sql } from '@/lib/neon';
 import { cohortLabel, cohortEnd, cohortCode, numberedCohorts } from './cohort';
+import { readiness as mailReadiness } from './directMail.service';
 
 /**
  * Where each cohort has got to in the three-phase pipeline (Frank, 13 Oct 2026).
@@ -80,6 +81,23 @@ export type PipelineCohort = {
    */
   contactsCards: number;
   contactsNotTheirs: number;
+
+  /** ── Phase 5: direct mail ──────────────────────────────────────────── */
+  /**
+   * How many of this week's Grade A leads could actually receive a letter, and why the rest
+   * cannot. Computed by directMail.service so the screen and the send list can never
+   * disagree about who is mailable.
+   *
+   * mailAwaitingRating is the state that existed nowhere before 15 Oct: the roll confirms
+   * the name, nothing is wrong, and no carrier has rated the home — so the Pipeline bar
+   * counts it as a confirmed success and the review queue correctly ignores it, while a
+   * letter whose whole payload is a price cannot go. It is a producer's job, not a
+   * reviewer's, which is why it is named apart rather than folded into "needs a person".
+   */
+  mailReady: number;
+  mailNeedsPerson: number;
+  mailAwaitingRating: number;
+  mailNoAddress: number;
 };
 
 const REVIEW_STATUSES = ['partial', 'mismatch', 'ambiguous', 'unknown'];
@@ -169,6 +187,15 @@ export async function getPipelineStatus(params: {
     contactRows.map((r) => [String(r.cohort), { cards: Number(r.cards ?? 0), notTheirs: Number(r.not_theirs ?? 0) }]),
   );
 
+  /**
+   * Mail readiness, asked once for the whole grade rather than per row.
+   *
+   * It reads leads rather than counters — whether a household has a band depends on carrier
+   * eligibility, which is a rule in code, not a column — so it is one pass over the grade
+   * instead of eight.
+   */
+  const mail = new Map((await mailReadiness(grade)).map((r) => [r.cohort, r]));
+
   const n = (v: unknown) => Number(v ?? 0);
 
   return rows.map((r) => {
@@ -213,6 +240,10 @@ export async function getPipelineStatus(params: {
       tracedBeforeRoll,
       contactsCards: contactsBy.get(String(r.cohort))?.cards ?? 0,
       contactsNotTheirs: contactsBy.get(String(r.cohort))?.notTheirs ?? 0,
+      mailReady: mail.get(String(r.cohort))?.ready ?? 0,
+      mailNeedsPerson: mail.get(String(r.cohort))?.needsPerson ?? 0,
+      mailAwaitingRating: mail.get(String(r.cohort))?.awaitingRating ?? 0,
+      mailNoAddress: mail.get(String(r.cohort))?.noAddress ?? 0,
     };
   });
 }

@@ -51,12 +51,14 @@ type Cohort = {
   coMatch: number; coNoneOnRoll: number; coNeedsReview: number;
   traced: number; tracedBeforeRoll: number;
   contactsCards: number; contactsNotTheirs: number;
+  mailReady: number; mailNeedsPerson: number; mailAwaitingRating: number; mailNoAddress: number;
 };
 
 type Totals = {
   total: number; rollChecked: number; rollNeedsReview: number;
   coNeedsReview: number; traced: number; tracedBeforeRoll: number;
   contactsCards: number; contactsNotTheirs: number;
+  mailReady: number; mailAwaitingRating: number;
 };
 
 const PHASE_LABEL: Record<Phase, string> = {
@@ -374,8 +376,8 @@ export default function PipelinePage() {
            * and the gaps between captions looked like a mistake. Ruling the boundaries makes
            * the grouping visible in every row rather than only in the header.
            */
-          [`& td:nth-of-type(3), & td:nth-of-type(6),
-            & td:nth-of-type(7), & td:nth-of-type(8)`]: { borderLeft: '1px solid #eef1f5' },
+          [`& td:nth-of-type(3), & td:nth-of-type(6), & td:nth-of-type(7),
+            & td:nth-of-type(8), & td:nth-of-type(9)`]: { borderLeft: '1px solid #eef1f5' },
         }}>
           {/*
             Four stages across two header rows.
@@ -390,6 +392,7 @@ export default function PipelinePage() {
               <TableCell colSpan={3} sx={{ ...STAGE_HEAD, ...GROUP_EDGE }}>2 · Tax roll</TableCell>
               <TableCell sx={{ ...STAGE_HEAD, ...GROUP_EDGE }}>3 · Skip trace</TableCell>
               <TableCell sx={{ ...STAGE_HEAD, ...GROUP_EDGE }}>4 · Contacts</TableCell>
+              <TableCell sx={{ ...STAGE_HEAD, ...GROUP_EDGE }}>5 · Direct mail</TableCell>
               <TableCell sx={GROUP_EDGE} />
             </TableRow>
             <TableRow sx={{ '& th': { bgcolor: '#f4f6f9', fontWeight: 600, fontSize: 11.5,
@@ -402,6 +405,7 @@ export default function PipelinePage() {
               <TableCell>The co-insured</TableCell>
               <TableCell sx={GROUP_EDGE}>Traced</TableCell>
               <TableCell sx={GROUP_EDGE}>Identity checked</TableCell>
+              <TableCell sx={GROUP_EDGE}>Mailable</TableCell>
               <TableCell sx={GROUP_EDGE} />
             </TableRow>
           </TableHead>
@@ -522,6 +526,27 @@ export default function PipelinePage() {
                   </TableCell>
 
                   {/*
+                    Mailable, and the two reasons the rest are not.
+
+                    "Awaiting a rating" is named rather than folded into the review count
+                    because it is a different person's job. The roll confirms those names and
+                    nothing is wrong with them — no carrier has rated the home, so there is no
+                    band, and a letter whose whole payload is a price cannot go. A reviewer
+                    cannot fix that; a producer can. Before this column those leads were green
+                    on every screen we had and still unmailable.
+                  */}
+                  <TableCell>
+                    <Box>
+                      <Line n={c.mailReady} label="mailable" tone="good"
+                        title="Grade A, the roll confirms the name, there is a band price and we hold a mailing address" />
+                      <Line n={c.mailNeedsPerson} label="need a person" tone="warn"
+                        title="The roll did not confirm the name — held back from mail until somebody looks" />
+                      <Line n={c.mailAwaitingRating} label="await a rating" tone="warn"
+                        title="Name confirmed, but no carrier has rated the home eligible, so there is no band price to print" />
+                    </Box>
+                  </TableCell>
+
+                  {/*
                     The two stages that can be started from here, and nothing else.
 
                     The roll spends nothing — but it leans on small municipal services, so it
@@ -593,7 +618,7 @@ export default function PipelinePage() {
             })}
             {!cohorts.length && !loading && (
               <TableRow>
-                <TableCell colSpan={9} sx={{ textAlign: 'center', py: 4, color: '#888' }}>
+                <TableCell colSpan={10} sx={{ textAlign: 'center', py: 4, color: '#888' }}>
                   No cohorts at this grade.
                 </TableCell>
               </TableRow>

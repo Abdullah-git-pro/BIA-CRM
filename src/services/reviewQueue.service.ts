@@ -30,7 +30,9 @@ export type ReviewKind =
   | 'unit_ambiguous'
   | 'not_on_roll'
   | 'coinsured_disagrees'
-  | 'no_reachable_number';
+  | 'no_reachable_number'
+  /** The roll and the card name different units of the same building. */
+  | 'unit_disagrees';
 
 export type ReviewItem = {
   leadId: string;
@@ -54,6 +56,7 @@ export const KIND_LABEL: Record<ReviewKind, string> = {
   owner_same_household: 'A relative may be on the deed',
   owner_different: 'The owner looks like a different person',
   unit_ambiguous: 'Which unit is ours',
+  unit_disagrees: 'The township records a different unit',
   not_on_roll: 'Not on any roll we can reach',
   coinsured_disagrees: 'The co-insured disagrees with the roll',
   no_reachable_number: 'No number on the card is this household’s',
@@ -68,6 +71,7 @@ export const KIND_LABEL: Record<ReviewKind, string> = {
  * person can do least about.
  */
 const KIND_ORDER: ReviewKind[] = [
+  'unit_disagrees',
   'owner_same_household',
   'coinsured_disagrees',
   'unit_ambiguous',
@@ -78,6 +82,30 @@ const KIND_ORDER: ReviewKind[] = [
 
 const C1 = '2026-10-05';
 const C8 = '2026-11-23';
+
+/**
+ * The unit an address names, or null when it names none.
+ *
+ * Reads all three ways this book writes one — "25B Pitman Rd", "25 Pitman Rd Unit B",
+ * "4-B Alabama Ct" — because the township and the card rarely choose the same form, and a
+ * comparison that only understood one of them would report every condo as a disagreement.
+ *
+ * Returns null rather than guessing on an ordinary address: "111 Ramble Way" has no unit,
+ * and inventing one would raise a question about every house in the book.
+ */
+function unitOf(street: string | null | undefined): string | null {
+  const s = String(street ?? '').trim().toUpperCase();
+  if (!s) return null;
+  const spelled = s.match(/\b(?:UNIT|APT|APARTMENT|STE|SUITE)\s*#?\s*([A-Z0-9]{1,4})\b/);
+  if (spelled) return spelled[1];
+  const hash = s.match(/#\s*([A-Z0-9]{1,4})\b/);
+  if (hash) return hash[1];
+  const suffix = s.match(/^\d+([A-Z])\s/);
+  if (suffix) return suffix[1];
+  const hyphen = s.match(/^\d+-([A-Z0-9]{1,4})\s/);
+  if (hyphen) return hyphen[1];
+  return null;
+}
 
 export async function getReviewQueue(params: { grade?: string } = {}): Promise<{
   items: ReviewItem[];
@@ -98,7 +126,7 @@ export async function getReviewQueue(params: { grade?: string } = {}): Promise<{
   const rows = await sql`
     SELECT l."id", l."propertyId", l."cohort",
            l."owner1FirstName", l."owner1LastName", l."owner2FirstName", l."owner2LastName",
-           l."addressStreet", l."addressCity", l."addressZip",
+           l."addressStreet", l."addressCity", l."addressZip", l."rollPropertyLoc",
            l."ownerVerifyName", l."ownerVerifyStatus", l."ownerVerifyDetail",
            l."coInsuredVerifyName", l."coInsuredVerifyStatus", l."coInsuredVerifyDetail",
            /*
@@ -157,6 +185,29 @@ export async function getReviewQueue(params: { grade?: string } = {}): Promise<{
       items.push({ ...base, kind: 'unit_ambiguous', detail: (r.ownerVerifyDetail as string) ?? null,
         question: 'Which of these units is ours?' });
     }
+    /**
+     * The roll and the card disagree about WHICH UNIT.
+     *
+     * Not a spelling difference and not something a normaliser settles: on 109 Deepwater
+     * Circle the township records unit A and both of our address columns say B. One of them
+     * describes a different home, and a letter quoting a premium to the wrong flat in the
+     * right building is the same disclosure as sending it to the wrong street.
+     *
+     * Raised apart from the name questions because the evidence is different — a reviewer
+     * needs the deed, not the policy — and because no automatic rule should resolve it. The
+     * address repair script skips this case deliberately for the same reason.
+     */
+    const rollUnit = unitOf(r.rollPropertyLoc as string | null);
+    const cardUnit = unitOf(r.addressStreet as string | null);
+    if (rollUnit && cardUnit && rollUnit !== cardUnit) {
+      items.push({
+        ...base,
+        kind: 'unit_disagrees',
+        detail: `Tax roll: ${r.rollPropertyLoc} · card: ${r.addressStreet}`,
+        question: 'The township records a different unit from the card — which one is ours?',
+      });
+    }
+
     if (status === 'not_found') {
       items.push({ ...base, kind: 'not_on_roll', detail: (r.ownerVerifyDetail as string) ?? null,
         question: 'The address was retried and the towns we hold do not list it — which town is it in?' });

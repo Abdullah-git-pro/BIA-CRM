@@ -22,6 +22,7 @@ import AccountTreeIcon from '@mui/icons-material/AccountTree';
 import InsightsIcon from '@mui/icons-material/Insights';
 import PhoneIcon from '@mui/icons-material/Phone';
 import MarkEmailReadIcon from '@mui/icons-material/MarkEmailRead';
+import MarkunreadMailboxIcon from '@mui/icons-material/MarkunreadMailbox';
 import PersonSearchIcon from '@mui/icons-material/PersonSearch';
 import PlaylistAddCheckIcon from '@mui/icons-material/PlaylistAddCheck';
 import DataObjectIcon from '@mui/icons-material/DataObject';
@@ -109,6 +110,11 @@ export default function Sidebar({ collapsed, onToggle, mobileOpen = false, onMob
       // Directly under Pipeline: that screen counts what needs a person, this is where
       // the work itself is. Separating them by half a menu would hide the follow-on.
       { label: 'Needs a person', icon: <PersonSearchIcon />, path: '/admin/review-queue' },
+      // Next to the two screens that decide who is mailable: the pipeline says how far a
+      // week has got, "needs a person" is the work that unblocks it, and this is the channel
+      // that consumes the result. A letter cannot be recalled, so it sits where the
+      // readiness is visible rather than beside the campaign screens.
+      { label: 'Direct mail', icon: <MarkunreadMailboxIcon />, path: '/admin/direct-mail' },
       { label: 'QC Reports',  icon: <AssessmentIcon />,      path: '/admin/qc' },
       { label: 'Outreach',    icon: <InsightsIcon />,        path: '/admin/outreach' },
       { label: 'Weekly Pull', icon: <EventRepeatIcon />,     path: '/admin/pull-weekly' },
