@@ -65,6 +65,17 @@ const LEAD_COLS = [
   // record as the insured. Omitted here it would read as undefined and the status would be
   // silently absent everywhere the card is loaded — the trap this list has sprung before.
   'coInsuredVerifyStatus', 'coInsuredVerifyName', 'coInsuredVerifyDetail', 'coInsuredVerifyAt',
+  /*
+   * A person's answer about the name (migration 061), and who gave it.
+   *
+   * Selected for the same reason as the line above: left out, lead.ownerReviewDecision reads
+   * back undefined on every card, so the decision would be invisible, the Reopen button
+   * would never appear, and the card would keep offering "It's ours" on a lead somebody had
+   * already settled. In CRM_ONLY_FIELDS for the matching reason — a REAPI re-import must
+   * never blank a colleague's judgement.
+   */
+  'ownerReviewDecision', 'ownerReviewBy', 'ownerReviewAt', 'ownerReviewNote',
+  'ownerReviewRollName', 'ownerReviewStatusAt',
   'lowPremium', 'expectedPremium', 'highPremium', 'pricingConfidence', 'status',
   'producerEmail', 'posQuoteNumber', 'posCarrier', 'boundPremium', 'boundDate',
   'authorizationDate', 'coastDistanceMiles', 'coastExposure',
@@ -193,6 +204,17 @@ const CRM_ONLY_FIELDS = new Set([
   // record as the insured. Omitted here it would read as undefined and the status would be
   // silently absent everywhere the card is loaded — the trap this list has sprung before.
   'coInsuredVerifyStatus', 'coInsuredVerifyName', 'coInsuredVerifyDetail', 'coInsuredVerifyAt',
+  /*
+   * A person's answer about the name (migration 061), and who gave it.
+   *
+   * Selected for the same reason as the line above: left out, lead.ownerReviewDecision reads
+   * back undefined on every card, so the decision would be invisible, the Reopen button
+   * would never appear, and the card would keep offering "It's ours" on a lead somebody had
+   * already settled. In CRM_ONLY_FIELDS for the matching reason — a REAPI re-import must
+   * never blank a colleague's judgement.
+   */
+  'ownerReviewDecision', 'ownerReviewBy', 'ownerReviewAt', 'ownerReviewNote',
+  'ownerReviewRollName', 'ownerReviewStatusAt',
   'lowPremium', 'expectedPremium', 'highPremium', 'pricingConfidence',
   'producerEmail', 'posQuoteNumber', 'posCarrier', 'boundPremium', 'boundDate', 'authorizationDate',
   'coastDistanceMiles', 'coastExposure', 'varianceNotes', 'varianceReason', 'varianceAmount',

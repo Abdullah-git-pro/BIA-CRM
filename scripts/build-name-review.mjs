@@ -18,6 +18,9 @@ console.log(`  match          ${String(r.matched).padStart(5)}`);
 console.log(`  queued         ${String(r.queued).padStart(5)}`);
 console.log(`  already queued ${String(r.alreadyQueued).padStart(5)}`);
 console.log(`  producer-typed, not checked ${r.notTraced}`);
+// The identity check already answered these, so the matcher never ran on them and no
+// reviewer is asked. Printed because it is the number that explains a shrinking queue.
+console.log(`  confirmed by the identity check ${r.confirmedTheirs}`);
 console.log('\nheld, by renewal week:');
 for (const c of r.byCohort) console.log(`   ${c.cohort}  ${String(c.n).padStart(3)}`);
 

@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test:names": "node scripts/test-owner-name-match.mjs"
+    "test:names": "node scripts/test-owner-name-match.mjs",
+    "test:review": "node --import ./scripts/lib/register-ts.mjs scripts/test-review-decision.mjs"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",

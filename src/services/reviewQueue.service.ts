@@ -127,6 +127,7 @@ export async function getReviewQueue(params: { grade?: string } = {}): Promise<{
     SELECT l."id", l."propertyId", l."cohort",
            l."owner1FirstName", l."owner1LastName", l."owner2FirstName", l."owner2LastName",
            l."addressStreet", l."addressCity", l."addressZip", l."rollPropertyLoc",
+           l."ownerReviewDecision", l."ownerReviewBy", l."ownerReviewAt",
            l."ownerVerifyName", l."ownerVerifyStatus", l."ownerVerifyDetail",
            l."coInsuredVerifyName", l."coInsuredVerifyStatus", l."coInsuredVerifyDetail",
            /*
@@ -160,6 +161,19 @@ export async function getReviewQueue(params: { grade?: string } = {}): Promise<{
       rollName: (r.ownerVerifyName as string) ?? null,
       coRollName: (r.coInsuredVerifyName as string) ?? null,
     };
+
+    /**
+     * A card somebody has already decided is not work any more.
+     *
+     * Both answers remove it. Confirmed is obvious; rejected matters just as much, because a
+     * card a colleague has looked at and judged wrong would otherwise be handed to the next
+     * person to spend the same ten minutes reaching the same conclusion.
+     *
+     * The decision is checked before anything else so it covers every kind of question this
+     * queue raises, not only the name ones.
+     */
+    const decided = r.ownerReviewDecision as string | null;
+    if (decided === 'confirmed' || decided === 'rejected') continue;
 
     const status = r.ownerVerifyStatus as string | null;
     const coStatus = r.coInsuredVerifyStatus as string | null;
@@ -269,4 +283,95 @@ export async function getReviewQueue(params: { grade?: string } = {}): Promise<{
   };
 
   return { items, counts, cohorts, blocked, grade };
+}
+
+/** One card a person has already settled, and what they settled it against. */
+export type DecidedItem = {
+  leadId: string;
+  propertyId: string | null;
+  cohort: string | null;
+  code: string | null;
+  label: string;
+  owner: string | null;
+  address: string | null;
+  decision: 'confirmed' | 'rejected';
+  by: string | null;
+  at: string | null;
+  note: string | null;
+  /** What the roll said when the decision was taken. */
+  rollName: string | null;
+  statusAt: string | null;
+  /** What the roll says NOW — if it has moved, the decision was about a different fact. */
+  rollNameNow: string | null;
+  statusNow: string | null;
+  stale: boolean;
+};
+
+/**
+ * The decisions, so a decision is something you can go and look at.
+ *
+ * A confirmed card disappears from the queue, which is the point — but with nothing showing
+ * the other side of that, "we recorded who confirmed it" would be true of the database and
+ * false of the product: nobody could see a colleague's judgement, question it, or undo a
+ * misclick. This is the list that makes the record worth keeping, and it is also the only
+ * place a decision can be reopened.
+ *
+ * `stale` compares the roll name and verdict as they are now against what was on screen when
+ * the decision was taken. A card re-read since, now naming somebody else, is flagged rather
+ * than quietly carrying a tick earned on different evidence.
+ */
+export async function getDecided(params: { grade?: string } = {}): Promise<{
+  items: DecidedItem[];
+  counts: { confirmed: number; rejected: number; stale: number };
+  grade: string;
+}> {
+  const grade = params.grade || 'A';
+
+  const rows = await sql`
+    SELECT l."id", l."propertyId", l."cohort",
+           l."owner1FirstName", l."owner1LastName",
+           l."addressStreet", l."addressCity", l."addressZip",
+           l."ownerReviewDecision", l."ownerReviewBy", l."ownerReviewAt", l."ownerReviewNote",
+           l."ownerReviewRollName", l."ownerReviewStatusAt",
+           l."ownerVerifyName", l."ownerVerifyStatus"
+      FROM "Lead" l
+     WHERE l."cohort" >= ${C1} AND l."cohort" <= ${C8}
+       AND COALESCE(l."manualGrade", l."grade") = ${grade}
+       AND l."ownerReviewDecision" IN ('confirmed', 'rejected')
+     ORDER BY l."ownerReviewAt" DESC` as Array<Record<string, unknown>>;
+
+  const items: DecidedItem[] = rows.map((r) => {
+    const rollNameNow = (r.ownerVerifyName as string) ?? null;
+    const statusNow = (r.ownerVerifyStatus as string) ?? null;
+    const rollName = (r.ownerReviewRollName as string) ?? null;
+    const statusAt = (r.ownerReviewStatusAt as string) ?? null;
+    return {
+      leadId: String(r.id),
+      propertyId: r.propertyId ? String(r.propertyId) : null,
+      cohort: r.cohort ? String(r.cohort) : null,
+      code: cohortCode(r.cohort as string),
+      label: cohortLabel(r.cohort as string),
+      owner: [r.owner1FirstName, r.owner1LastName].filter(Boolean).join(' ').trim() || null,
+      address: [r.addressStreet, r.addressCity, r.addressZip].filter(Boolean).join(', ') || null,
+      decision: r.ownerReviewDecision as 'confirmed' | 'rejected',
+      by: (r.ownerReviewBy as string) ?? null,
+      at: r.ownerReviewAt ? new Date(r.ownerReviewAt as string).toISOString() : null,
+      note: (r.ownerReviewNote as string) ?? null,
+      rollName,
+      statusAt,
+      rollNameNow,
+      statusNow,
+      stale: rollName !== rollNameNow || statusAt !== statusNow,
+    };
+  });
+
+  return {
+    items,
+    counts: {
+      confirmed: items.filter((i) => i.decision === 'confirmed').length,
+      rejected: items.filter((i) => i.decision === 'rejected').length,
+      stale: items.filter((i) => i.stale).length,
+    },
+    grade,
+  };
 }

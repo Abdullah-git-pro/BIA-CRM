@@ -199,6 +199,18 @@ export default function CallDispositionPanel({ leadId }: { leadId: string }) {
   const [capCo, setCapCo] = useState('');
   const [capOpen, setCapOpen] = useState(false);
   /** The "put it back in the queue" reveal — see returnToQueue below. */
+  /**
+   * The history is closed until somebody asks for it.
+   *
+   * A lead with twenty attempts pushed everything below it off the page. The summary lines
+   * above already say what the log would be consulted for — how many numbers, how many
+   * tries, how recently — so the rows themselves are evidence you go looking for rather than
+   * something to scroll past on every card.
+   *
+   * It opens by itself after you log an attempt, because undo lives on the newest row and
+   * sending it behind a click would make the five seconds after a wrong tap useless.
+   */
+  const [showAllAttempts, setShowAllAttempts] = useState(false);
   const [reqOpen, setReqOpen] = useState(false);
   const [reqReason, setReqReason] = useState('');
   const [callbackAt, setCallbackAt] = useState('');
@@ -301,6 +313,7 @@ export default function CallDispositionPanel({ leadId }: { leadId: string }) {
       })).json();
       if (!j.success) throw new Error(j.error || 'Could not log the attempt');
       setState(j.data);
+      setShowAllAttempts(true);
       setNotes(''); setCallbackAt('');
       setMsg(`Logged: ${spec.label}.`
         + (j.numberInvalidated ? ' That number will not be dialled again.' : '')
@@ -857,7 +870,7 @@ export default function CallDispositionPanel({ leadId }: { leadId: string }) {
             allows. A button on every row would invite editing history; this is for the
             five seconds after a wrong tap.
           */}
-          {state.attempts.map((a, idx) => {
+          {(showAllAttempts ? state.attempts : []).map((a, idx) => {
             const spec = CALL_OUTCOMES.find((o) => o.key === a.outcome);
             return (
               <Box key={a.id} sx={{ display: 'flex', gap: 1, py: 0.5, alignItems: 'baseline', flexWrap: 'wrap' }}>
@@ -915,6 +928,27 @@ export default function CallDispositionPanel({ leadId }: { leadId: string }) {
               </Box>
             );
           })}
+
+          {/*
+            Collapsed, but never silently.
+
+            The button carries the number it is hiding, so a card with twenty attempts behind
+            it cannot read like a card with four. Hiding the count is how a caller concludes
+            "nobody has tried this one much" about a household that has been rung nine times.
+          */}
+          {state.attempts.length > 0 && (
+            <Box sx={{ display: 'flex', justifyContent: 'center', mt: 0.5 }}>
+            <Button
+              size="small" variant="text"
+              onClick={() => setShowAllAttempts((v) => !v)}
+              sx={{ minWidth: 0, py: 0.25, px: 1, fontSize: 11.5, textTransform: 'none', color: '#1565c0' }}
+            >
+              {showAllAttempts
+                ? 'Hide the attempts'
+                : `Show ${state.attempts.length} attempt${state.attempts.length === 1 ? '' : 's'}`}
+            </Button>
+            </Box>
+          )}
         </>
       )}
     </Paper>

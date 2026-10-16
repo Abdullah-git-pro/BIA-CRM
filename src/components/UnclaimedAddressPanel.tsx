@@ -11,7 +11,7 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle';
  * Addresses this property's trace returned and attributed to nobody.
  *
  * ── Why this sits on the card as well as in the queue ───────────────────────
- * The Name check screen is where a short list gets cleared in one sitting. This is where
+ * The Email check screen is where a short list gets cleared in one sitting. This is where
  * the question gets answered properly, because the answer depends on everything else on
  * the card — the other people the trace returned, the phone numbers, the name the tax roll
  * holds. Deciding whether waqasashraf78@gmail.com is Waqas Ashraf is a glance; deciding

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useStickyState } from '@/hooks/useStickyState';
 import {
   Container, Box, Typography, Paper, Button, Chip, CircularProgress, Alert, Stack,
@@ -55,6 +56,8 @@ type Row = {
 
 type Summary = {
   open: number; approved: number; rejected: number;
+  /** Held addresses the paid identity check already answered — nobody needs to look. */
+  settledByIdentity: number;
   byCohort: Array<{ cohort: string; open: number }>;
 };
 
@@ -96,6 +99,48 @@ export default function NameReviewPage() {
    * here than it does on most screens.
    */
   const [grade, setGrade] = useStickyState<string>('nameReview:grade', '');
+  /**
+   * The filters a returning tab arrives with, seeded into storage before anything reads it.
+   *
+   * useStickyState is backed by sessionStorage, which is per TAB — and every row here opens
+   * its lead in a NEW tab with rel="noopener", so that tab gets an empty one and the queue
+   * came back unfiltered. The lead card hands the filters back on ?cohort/?view/?grade;
+   * writing them to storage during the first render means the restore effect finds them
+   * exactly as if this tab had set them itself, with no second source of truth and no race
+   * against that hook's restore.
+   *
+   * Read through useSearchParams, not window.location: on the first render after a client
+   * navigation the address bar is still the page you came FROM, so reading it there seeded
+   * nothing and the filter came back empty anyway.
+   */
+  const search = useSearchParams();
+  useState(() => {
+    if (typeof window === 'undefined') return null;
+    for (const [param, key] of [
+      ['cohort', 'nameReview:cohort'],
+      ['view', 'nameReview:view'],
+      ['grade', 'nameReview:grade'],
+    ] as const) {
+      const v = search.get(param);
+      if (v == null) continue;
+      try { sessionStorage.setItem(key, JSON.stringify(v)); } catch { /* blocked storage */ }
+    }
+    return null;
+  });
+
+  /**
+   * The handed-back filters leave the address bar once they are in.
+   *
+   * They have done their job at this point, and leaving them there makes the URL lie as soon
+   * as somebody changes a filter — the bar would still say cohort=2026-10-05 over a list
+   * showing a different week, which is the URL you then copy to a colleague. A reload still
+   * works: the values are in this tab's storage now.
+   */
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.location.search) return;
+    window.history.replaceState(null, '', window.location.pathname);
+  }, []);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   /** Rows currently being written, so a row cannot be double-clicked into two decisions. */
@@ -110,6 +155,23 @@ export default function NameReviewPage() {
    * the Grade A table under the Grade B tab on the cohorts screen last week.
    */
   const wanted = useRef(0);
+
+  /**
+   * A lead link that remembers the list it came from.
+   *
+   * The filters ride along so Back can restore them; ?from tells the card which screen this
+   * is, because a new tab has no history to walk back through.
+   */
+  const leadHref = (leadId: string) => {
+    const q = new URLSearchParams({ from: 'email-check' });
+    const fromq = new URLSearchParams();
+    if (cohort) fromq.set('cohort', cohort);
+    if (view !== 'open') fromq.set('view', view);
+    if (grade) fromq.set('grade', grade);
+    const s = fromq.toString();
+    if (s) q.set('fromq', s);
+    return `/leads/${leadId}?${q.toString()}`;
+  };
 
   const load = useCallback(async () => {
     const mine = ++wanted.current;
@@ -168,7 +230,7 @@ export default function NameReviewPage() {
   return (
     <Container maxWidth="lg" sx={{ py: 4 }}>
       <Typography variant="h4" gutterBottom sx={{ fontWeight: 700 }}>
-        Name check
+        Email check
       </Typography>
       <Typography color="text.secondary" sx={{ mb: 3 }}>
         Skip tracing found these email addresses, but the name in the address does not look like
@@ -213,6 +275,19 @@ export default function NameReviewPage() {
               {done} of {total} decided
               {summary ? ` — ${summary.approved} kept, ${summary.rejected} blocked` : ''}
             </Typography>
+            {/*
+              Said, not silently dropped.
+
+              These rows are off the list because Trestle has already answered them — the
+              address is registered to somebody else — and they stay blocked from every send.
+              A queue that simply got shorter with no explanation is one nobody can audit.
+            */}
+            {!!summary?.settledByIdentity && (
+              <Typography variant="caption" sx={{ color: '#5a6675', display: 'block', mt: 0.25 }}>
+                {summary.settledByIdentity} more are settled by the identity check — registered
+                to somebody else, already blocked, nobody needs to look at them.
+              </Typography>
+            )}
           </Box>
           {/* Three fixed-width pickers and a button come to roughly 480px, which is wider
               than a phone. They wrap onto as many lines as they need rather than pushing
@@ -361,7 +436,7 @@ export default function NameReviewPage() {
                       >
                         <Typography
                           component="a"
-                          href={`/leads/${g.leadId}`}
+                          href={leadHref(g.leadId)}
                           target="_blank"
                           rel="noopener"
                           sx={{
@@ -440,7 +515,7 @@ export default function NameReviewPage() {
                     */}
                   <Typography
                     component="a"
-                    href={`/leads/${r.leadId}`}
+                    href={leadHref(r.leadId)}
                     target="_blank"
                     rel="noopener"
                     /**

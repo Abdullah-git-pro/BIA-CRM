@@ -283,6 +283,36 @@ const RESTRICTED_DOG_BREEDS = [
   'Rottweiler', 'Staffordshire Bull Terrier', 'Wolf Hybrid',
 ];
 
+/**
+ * Origins that are a screen rather than a QC report key.
+ *
+ * Anything not listed here is treated as a report key, which is what ?from meant before and
+ * what every existing link still carries. The second value is the filter params that screen
+ * will accept back — an allowlist, because this ends up in a router.push.
+ */
+const ORIGIN_HOME: Record<string, { path: string; filters: string[] }> = {
+  'email-check': { path: '/admin/name-review', filters: ['cohort', 'view', 'grade'] },
+};
+
+/**
+ * The filters the origin screen had, rebuilt from ?fromq.
+ *
+ * Never passed through as given: it is re-parsed and re-serialised from an allowlist, so
+ * whatever is in the URL can only ever come back out as that screen's own filter params —
+ * not a path, not another origin, not a third query of somebody's choosing.
+ */
+function originQuery(raw: string | null, allowed: string[]): string {
+  if (!raw) return '';
+  const inq = new URLSearchParams(raw);
+  const out = new URLSearchParams();
+  for (const k of allowed) {
+    const v = inq.get(k);
+    if (v) out.set(k, v);
+  }
+  const s = out.toString();
+  return s ? `?${s}` : '';
+}
+
 // ─── Page ────────────────────────────────────────────────────────────────────
 
 export default function LeadDetailPage() {
@@ -301,10 +331,29 @@ export default function LeadDetailPage() {
   const cameFrom = typeof window === 'undefined'
     ? null
     : new URLSearchParams(window.location.search).get('from');
-  const keepOrigin = (href: string) => (cameFrom ? `${href}?from=${encodeURIComponent(cameFrom)}` : href);
+  /** The origin screen's own filters, carried so Back lands on the list as it was left. */
+  const cameFromQuery = typeof window === 'undefined'
+    ? null
+    : new URLSearchParams(window.location.search).get('fromq');
+  const keepOrigin = (href: string) => {
+    if (!cameFrom) return href;
+    const q = new URLSearchParams({ from: cameFrom });
+    if (cameFromQuery) q.set('fromq', cameFromQuery);
+    return `${href}?${q.toString()}`;
+  };
 
   const goBack = () => {
     if (typeof window === 'undefined') return;
+    /*
+     * An origin that names a screen goes straight back to it.
+     *
+     * Screens that open a lead in a NEW TAB have no history to go back through, so Back fell
+     * through to the leads list and the reviewer lost the queue they were working — reported
+     * from Email check, where every row opens in its own tab on purpose so a list of 745
+     * keeps its place.
+     */
+    const home = cameFrom ? ORIGIN_HOME[cameFrom] : undefined;
+    if (home) { router.push(`${home.path}${originQuery(cameFromQuery, home.filters)}`); return; }
     // A lead opened from a QC report carries ?from=<report key>. router.back() alone
     // lands on the QC page with its React state gone — the chosen report shows its
     // empty "press Run" state and the pipeline tab is back at the first stage — so the
@@ -344,6 +393,16 @@ export default function LeadDetailPage() {
   const [skipTracing, setSkipTracing] = useState(false);
   const [overridingName, setOverridingName] = useState(false);
   const [verifyingOwner, setVerifyingOwner] = useState(false);
+  /**
+   * The history is closed until somebody asks for it.
+   *
+   * An old lead carries dozens of entries and they are the last thing on the page, so the
+   * card ended in a wall nobody reads. The count stays in the section heading, so a lead
+   * with forty entries never looks like a lead with six.
+   */
+  const [showAllActivity, setShowAllActivity] = useState(false);
+  /** A person settling the name themselves, rather than asking the township again. */
+  const [decidingOwner, setDecidingOwner] = useState(false);
   const [floodChecking, setFloodChecking] = useState(false);
   const [enriching, setEnriching] = useState(false);
   const [batchTracing, setBatchTracing] = useState(false);
@@ -787,6 +846,42 @@ export default function LeadDetailPage() {
   };
 
   /**
+   * Record a person's own answer about the name.
+   *
+   * The button beside this one re-asks the township, which returns what it returned last
+   * time. For the 206 Grade A cards the roll could not settle that was the end of the road:
+   * no amount of looking could move them, because direct mail's Gate 0 needs the name
+   * settled. This is where a reviewer's own judgement goes instead — same endpoint as the
+   * review queue, so there is one set of rules and one audit trail, not two.
+   */
+  const decideOwnerAction = async (decision: 'confirmed' | 'rejected' | 'reopen') => {
+    setDecidingOwner(true);
+    try {
+      const res = await fetch('/api/admin/review-queue/decide', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId: lead?.propertyId || id, decision }),
+      });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error || 'Could not record that');
+      setSnackbar({
+        open: true,
+        msg: decision === 'reopen'
+          ? 'Decision cleared — the card is back on the review list'
+          : decision === 'confirmed'
+            ? `Recorded as ours against ${json.by}. The card can now be mailed once it is rated.`
+            : `Recorded as NOT ours against ${json.by}. It will never be mailed.`,
+        severity: 'success',
+      });
+      await load();
+    } catch (err) {
+      setSnackbar({ open: true, msg: err instanceof Error ? err.message : 'Could not record that', severity: 'error' });
+    } finally {
+      setDecidingOwner(false);
+    }
+  };
+
+  /**
    * Second-source trace. Works on any grade — see the API route for why.
    */
   const runBatchDataAction = async () => {
@@ -1143,17 +1238,42 @@ export default function LeadDetailPage() {
     };
     return (
       <>
-        <Stack direction="row" sx={{ alignItems: 'center', mb: 0.75, flexWrap: 'wrap' }} spacing={1}>
-          {eligibilityIcon(cur)}
-          <Typography variant="body2" sx={{ fontWeight: 600, minWidth: 92 }}>{label}</Typography>
-          <FormControl size="small" sx={{ minWidth: 140 }}>
-            <Select value={cur} displayEmpty onChange={(e) => setEx(valKey, e.target.value)}>
+        {/*
+          ── A verdict reads as a fact, and is still editable ─────────────────
+          This was a boxed dropdown wedged beside the label, 140px wide in a 300px column, so
+          the one panel on the card that is mostly read looked like a form. The carrier's
+          answer now sits where every other answer on this card sits — right-hand side, same
+          weight — and the control is the text itself: click it and the options open. The box
+          was never carrying meaning, only announcing that something was editable.
+        */}
+        <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', py: 0.5 }} spacing={1}>
+          <Stack direction="row" spacing={0.75} sx={{ alignItems: 'center', minWidth: 0 }}>
+            {eligibilityIcon(cur)}
+            <Typography variant="body2" color="text.secondary" noWrap>{label}</Typography>
+          </Stack>
+          <FormControl size="small" variant="standard" sx={{ minWidth: 96 }}>
+            <Select
+              value={cur}
+              displayEmpty
+              disableUnderline
+              onChange={(e) => setEx(valKey, e.target.value)}
+              sx={{
+                '& .MuiSelect-select': {
+                  py: 0, pl: 0, pr: '20px !important',
+                  textAlign: 'right', fontSize: 14, fontWeight: 500,
+                  minHeight: 0,
+                },
+                // The caret is the only hint it is a control; it stays, quietly.
+                '& .MuiSelect-icon': { color: '#9098a6', right: -2 },
+                '&:hover .MuiSelect-select': { textDecoration: 'underline', textUnderlineOffset: 3 },
+              }}
+            >
               {ELIG_OPTS.map(([v, l]) => <MenuItem key={v} value={v}>{l}</MenuItem>)}
             </Select>
           </FormControl>
         </Stack>
         {notes.length > 0 && (
-          <Box sx={{ pl: 3.5, mb: showReason ? 1 : 1.5 }}>
+          <Box sx={{ pl: 3.25, mb: showReason ? 1 : 1.5 }}>
             {notes.map((n, i) => (
               <Typography key={i} variant="caption" color="text.secondary" sx={{ display: 'block' }}>• {n}</Typography>
             ))}
@@ -1243,15 +1363,119 @@ export default function LeadDetailPage() {
               {hasRealName && lead.ownerVerifyStatus && lead.ownerVerifyStatus !== 'match' && lead.ownerVerifyName && (
                 <Row label="Tax Record Shows" value={<Box component="span" sx={{ color: '#8a5a00' }}>{lead.ownerVerifyName}</Box>} />
               )}
-              {!!WIPP_BY_ZIP[String(lead.addressZip ?? '').trim()]?.length && (
-                <Button
-                  size="small" variant="outlined" sx={{ mt: 0.5, mb: 0.5, textTransform: 'none' }}
-                  startIcon={verifyingOwner ? <CircularProgress size={13} color="inherit" /> : <VerifiedIcon sx={{ fontSize: 15 }} />}
-                  onClick={runOwnerVerifyAction}
-                  disabled={verifyingOwner}
-                >
-                  {verifyingOwner ? 'Checking…' : lead.ownerVerifyStatus ? 'Re-check owner name' : 'Verify owner name'}
-                </Button>
+              {/*
+                ── A person's answer, where a person is looking ────────────────
+                Shown as its own row and never merged into the badge above: that badge is the
+                township's finding and this is a colleague's. Collapsing them would repeat the
+                collision that had two opposite things both reading "verified" on the contact
+                screen — and a reader could no longer tell which kind of evidence a mailable
+                card was resting on.
+              */}
+              {lead.ownerReviewDecision && (
+                <Row
+                  label={lead.ownerReviewDecision === 'confirmed' ? 'Confirmed by' : 'Rejected by'}
+                  value={
+                    <Tooltip
+                      title={
+                        <span style={{ whiteSpace: 'pre-line' }}>
+                          {`${lead.ownerReviewBy ?? 'someone'} ${lead.ownerReviewDecision === 'confirmed' ? 'confirmed' : 'rejected'} this name`}
+                          {lead.ownerReviewAt ? `\nOn ${new Date(String(lead.ownerReviewAt)).toLocaleString()}` : ''}
+                          {`\nThe roll then said: ${lead.ownerReviewRollName || '(no name)'} · ${lead.ownerReviewStatusAt || 'not run'}`}
+                          {lead.ownerReviewNote ? `\nNote: ${lead.ownerReviewNote}` : ''}
+                        </span>
+                      }
+                    >
+                      <Box sx={{ cursor: 'help', textAlign: 'right' }}>
+                        <Box sx={{ color: lead.ownerReviewDecision === 'confirmed' ? '#1e7b34' : '#b3261e', fontWeight: 600, fontSize: 12.5, wordBreak: 'break-all' }}>
+                          {lead.ownerReviewBy ?? 'someone'}
+                        </Box>
+                        {lead.ownerReviewAt ? (
+                          <Box sx={{ fontWeight: 400, color: '#8a94a6', fontSize: 11 }}>
+                            {new Date(String(lead.ownerReviewAt)).toLocaleDateString('en-US', { dateStyle: 'medium' })}
+                          </Box>
+                        ) : null}
+                      </Box>
+                    </Tooltip>
+                  }
+                />
+              )}
+              {/*
+                ── The decision keeps the panel's shape ───────────────────────
+                Three bordered buttons in a row broke it: the column is ~300px, so the third
+                wrapped onto a line of its own and the block read as debris dropped into a
+                tidy label/value list. The question is asked the way every other fact here is
+                presented — label on the left, answer on the right — and the two answers are
+                the only emphasised controls in the panel, because they are the only ones
+                that change what happens to the household.
+              */}
+              {hasRealName && lead.ownerVerifyStatus !== 'match' && !lead.ownerReviewDecision && (
+                <Row
+                  label="Your call"
+                  value={
+                    <Stack direction="row" spacing={0.5} sx={{ justifyContent: 'flex-end' }}>
+                      <Tooltip arrow title="You have looked at the evidence and the name we hold is the policyholder. Recorded against your name; the card can then be mailed.">
+                        <span>
+                          <Button
+                            size="small" variant="outlined" color="success"
+                            sx={{ textTransform: 'none', fontSize: 11.5, py: 0.1, px: 1, minWidth: 0, lineHeight: 1.6 }}
+                            onClick={() => decideOwnerAction('confirmed')}
+                            disabled={decidingOwner}
+                          >
+                            {decidingOwner ? 'Saving…' : "Yes, it's ours"}
+                          </Button>
+                        </span>
+                      </Tooltip>
+                      <Tooltip arrow title="The name we hold is NOT the policyholder. The card leaves the review list and never becomes mailable.">
+                        <span>
+                          <Button
+                            size="small" variant="outlined" color="error"
+                            sx={{ textTransform: 'none', fontSize: 11.5, py: 0.1, px: 1, minWidth: 0, lineHeight: 1.6 }}
+                            onClick={() => decideOwnerAction('rejected')}
+                            disabled={decidingOwner}
+                          >
+                            No
+                          </Button>
+                        </span>
+                      </Tooltip>
+                    </Stack>
+                  }
+                />
+              )}
+
+              {/*
+                Everything below is a quiet second rank: re-asking the township is a machine
+                action and reopening undoes a decision somebody already took. Drawn as plain
+                links so neither competes with the question above, and on one right-aligned
+                line so the panel keeps a single edge.
+              */}
+              {(!!WIPP_BY_ZIP[String(lead.addressZip ?? '').trim()]?.length || lead.ownerReviewDecision) && (
+                <Stack direction="row" spacing={1.5} sx={{ justifyContent: 'flex-end', alignItems: 'center', pt: 0.25, pb: 0.25 }}>
+                  {!!WIPP_BY_ZIP[String(lead.addressZip ?? '').trim()]?.length && (
+                    <Button
+                      size="small" variant="text"
+                      sx={{ textTransform: 'none', fontSize: 11.5, py: 0, px: 0.5, minWidth: 0, color: '#5a6675' }}
+                      startIcon={verifyingOwner ? <CircularProgress size={11} color="inherit" /> : undefined}
+                      onClick={runOwnerVerifyAction}
+                      disabled={verifyingOwner}
+                    >
+                      {verifyingOwner ? 'Checking…' : lead.ownerVerifyStatus ? 'Re-check the roll' : 'Check the roll'}
+                    </Button>
+                  )}
+                  {lead.ownerReviewDecision && (
+                    <Tooltip arrow title="Clear this decision and put the card back on the review list. The reopening is recorded too.">
+                      <span>
+                        <Button
+                          size="small" variant="text"
+                          sx={{ textTransform: 'none', fontSize: 11.5, py: 0, px: 0.5, minWidth: 0, color: '#5a6675' }}
+                          onClick={() => decideOwnerAction('reopen')}
+                          disabled={decidingOwner}
+                        >
+                          {decidingOwner ? 'Clearing…' : 'Reopen'}
+                        </Button>
+                      </span>
+                    </Tooltip>
+                  )}
+                </Stack>
               )}
               {lead.reapiDob && (
                 <Row label="REAPI DOB" value={dobDisplay(lead.reapiDob)} />
@@ -1486,29 +1710,37 @@ export default function LeadDetailPage() {
                   : (lead.floodCheckedAt ? 'X — minimal' : '— (not checked)')
               } />
               {lead.floodZoneSubtype && <Row label="Zone Detail" value={lead.floodZoneSubtype} />}
-              <Box sx={{ mt: 0.75 }}>
-                <Link href="https://msc.fema.gov/portal/home" target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: '#1565c0', fontWeight: 600 }}>
-                  Verify on FEMA map ↗
-                </Link>
-                {lead.floodCheckedAt && (
-                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
-                    Auto-checked via FEMA NFHL {new Date(lead.floodCheckedAt).toLocaleDateString()}
-                  </Typography>
-                )}
+              {/*
+                ── Reference on the left, the machine action on the right ──────
+                Re-asking FEMA returns what FEMA already returned; it is maintenance, not a
+                decision, so it reads as a link rather than as the most prominent control in
+                the panel — which is what a full-width outlined button made it.
+              */}
+              <Box sx={{ mt: 0.75, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 1 }}>
+                <Box sx={{ minWidth: 0 }}>
+                  <Link href="https://msc.fema.gov/portal/home" target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: '#1565c0', fontWeight: 600 }}>
+                    Verify on FEMA map ↗
+                  </Link>
+                  {lead.floodCheckedAt && (
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
+                      Auto-checked via FEMA NFHL {new Date(lead.floodCheckedAt).toLocaleDateString()}
+                    </Typography>
+                  )}
+                </Box>
+                <Button
+                  size="small"
+                  variant="text"
+                  startIcon={floodChecking ? <CircularProgress size={11} color="inherit" /> : undefined}
+                  onClick={runFloodCheckAction}
+                  disabled={floodChecking || lead.floodZoneManual === true || lead.latitude == null}
+                  sx={{ textTransform: 'none', fontSize: 11.5, py: 0, px: 0.5, minWidth: 0, color: '#5a6675', flexShrink: 0 }}
+                >
+                  {floodChecking ? 'Checking…' : 'Re-check FEMA'}
+                </Button>
               </Box>
               {floodCapNote && (
                 <Alert severity={floodCapNote.severity} sx={{ mt: 1, py: 0, fontSize: 12 }}>{floodCapNote.text}</Alert>
               )}
-              <Button
-                size="small"
-                variant="outlined"
-                startIcon={floodChecking ? <CircularProgress size={14} color="inherit" /> : <WavesIcon />}
-                onClick={runFloodCheckAction}
-                disabled={floodChecking || lead.floodZoneManual === true || lead.latitude == null}
-                sx={{ mt: 1 }}
-              >
-                {floodChecking ? 'Checking…' : 'Re-check Flood (FEMA)'}
-              </Button>
               {lead.floodZoneManual === true && (
                 <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
                   Manual override active — clear it to re-check FEMA.
@@ -2509,7 +2741,7 @@ export default function LeadDetailPage() {
         {lead.activities?.length > 0 && (
           <Section title={`Activity Log (${lead.activities.length})`}>
             <Stack spacing={1} sx={{ mt: 0.5 }}>
-              {lead.activities.map((a: any) => {
+              {(showAllActivity ? lead.activities : []).map((a: any) => {
                 const det = Array.isArray(a.metadata?.changes) ? a.metadata.changes : [];
                 /**
                  * A mass operation is marked, and carries the run it belonged to.
@@ -2577,6 +2809,26 @@ export default function LeadDetailPage() {
                 );
               })}
             </Stack>
+            {/*
+              Collapsed, but never silently — the button says how much is behind it.
+
+              A bare "show more" lets a lead with forty entries read like a lead with six,
+              which is the same failure as hiding the count on the call log: the reader draws
+              a conclusion about how much has happened here from what they can see.
+            */}
+            {lead.activities.length > 0 && (
+              <Box sx={{ display: 'flex', justifyContent: 'center', mt: showAllActivity ? 1 : 0 }}>
+                <Button
+                  size="small" variant="text"
+                  onClick={() => setShowAllActivity((v) => !v)}
+                  sx={{ minWidth: 0, py: 0.25, px: 1, fontSize: 11.5, textTransform: 'none', color: '#1565c0' }}
+                >
+                  {showAllActivity
+                    ? 'Hide the history'
+                    : `Show ${lead.activities.length} entr${lead.activities.length === 1 ? 'y' : 'ies'}`}
+                </Button>
+              </Box>
+            )}
           </Section>
         )}
 

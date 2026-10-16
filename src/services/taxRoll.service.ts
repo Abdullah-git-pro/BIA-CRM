@@ -98,6 +98,68 @@ export const WIPP_BY_ZIP: Record<string, Municipality[]> = {
   ],
   '07733': [{ wippId: '1320', town: 'Holmdel' }],
   '07722': [{ wippId: '1310', town: 'Colts Neck' }],   // property tax only
+
+  /**
+   * ── Monmouth towns that were never wired up (15 Oct 2026) ─────────────────
+   *
+   * 156 Grade A leads were coming back 'unsupported', which reads as "this town has no roll
+   * we can reach" and was about to be sent to Frank as a list of nineteen townships to chase
+   * data from. It was not true. 'unsupported' only ever meant "no municipality configured
+   * for this ZIP", and almost all of these towns were sitting on the same provider as
+   * Howell and Holmdel, never added.
+   *
+   * Found by asking each Monmouth id (1301–1353) what it holds rather than guessing, then
+   * confirming each candidate the way the real lookup does: a full street from a real lead,
+   * matched exactly against what the roll returns. Old Bridge was used as a control and
+   * correctly failed — it is Middlesex and genuinely runs its own system.
+   *
+   * Three of these are not towns at all but villages inside townships we already queried,
+   * which is why their leads should never have been unsupported: Morganville is Marlboro,
+   * and Lincroft and Belford are Middletown.
+   */
+  '07721': [{ wippId: '1301', town: 'Aberdeen' }],     // Cliffwood is in Aberdeen Township
+  '07751': [{ wippId: '1330', town: 'Marlboro' }],     // Morganville is in Marlboro
+  '07738': [{ wippId: '1332', town: 'Middletown' }],   // Lincroft is in Middletown
+  '07718': [{ wippId: '1332', town: 'Middletown' }],   // Belford is in Middletown
+  '07701': [{ wippId: '1339', town: 'Red Bank' }],
+  '07753': [{ wippId: '1335', town: 'Neptune Township' }],
+  '07764': [{ wippId: '1353', town: 'West Long Branch' }],
+  '08730': [{ wippId: '1309', town: 'Brielle' }],
+  '07762': [{ wippId: '1347', town: 'Spring Lake' }],
+  '07760': [{ wippId: '1341', town: 'Rumson' }],
+  '07720': [{ wippId: '1308', town: 'Bradley Beach' }],
+
+  /**
+   * ── ZIPs that span more than one municipality ─────────────────────────────
+   *
+   * Each of these failed against the town it is named after and succeeded against a
+   * neighbour, which is the normal shape here rather than an anomaly: 07727 is posted as
+   * Farmingdale but five of six sampled properties are assessed by HOWELL, and 07712 is
+   * posted as Asbury Park while five of six are OCEAN TOWNSHIP.
+   *
+   * Listing several is safe. lookupTaxRoll accepts a record only on an exact normalised
+   * address match, so a municipality that does not hold the property simply returns
+   * nothing — it cannot put the wrong town's owner on a card.
+   *
+   * Matawan is here despite the 14 Oct note that it "uses officialpayments.com". That was
+   * about its PAYMENT portal; its roll is on this API like everybody else's — the same
+   * split Dunellen has above. Worth remembering before writing another town off.
+   */
+  '07747': [
+    { wippId: '1331', town: 'Matawan' },
+    { wippId: '1301', town: 'Aberdeen' },
+  ],
+  '07727': [
+    { wippId: '1321', town: 'Howell' },
+    { wippId: '1315', town: 'Farmingdale' },
+  ],
+  '07712': [
+    { wippId: '1337', town: 'Ocean Township' },
+    { wippId: '1304', town: 'Asbury Park' },
+  ],
+  '07719': [{ wippId: '1352', town: 'Wall Township' }],
+  '08510': [{ wippId: '1333', town: 'Millstone Township' }],
+  '07732': [{ wippId: '1319', town: 'Highlands' }],
   '08701': [{ wippId: '1515', town: 'Lakewood' }],     // Ocean County, property tax only
 
   // ── Middlesex County (Frank Aug-2026) ───────────────────────────────────────

@@ -131,6 +131,30 @@ export function letterVarsFor(lead: Record<string, any>): Record<string, string>
 
 /** Where one lead stands. Ordered: the first thing that fails is the thing to fix. */
 export function mailStateOf(lead: Record<string, any>): MailState {
+  /**
+   * A person's confirmation counts, and a person's rejection is final.
+   *
+   * Gate 0 asks whether we are confident the name on the card is the policyholder. The
+   * township's deed is the best answer and a colleague who has looked at the evidence is the
+   * next best — 206 Grade A leads sat at partial/mismatch/not_found with no way for anybody
+   * to say so, which meant no amount of review could ever make them mailable.
+   *
+   * Checked BEFORE the roll's verdict is even read, including before "we never asked". A
+   * person's answer to Gate 0's question does not become worth less because the township was
+   * never queried; treating an unrun check as overriding a colleague would make the decision
+   * silently useless on exactly the cards where it was hardest to reach.
+   *
+   * Rejected never becomes mailable: somebody has looked and judged the name wrong.
+   */
+  if (lead.ownerReviewDecision === 'rejected') return 'needs_person';
+  if (lead.ownerReviewDecision === 'confirmed') {
+    const vars = letterVarsFor(lead);
+    if (!vars.band_low || !vars.band_high) return 'awaiting_rating';
+    const street = String(lead.mailStreet ?? '').trim();
+    const zip = String(lead.mailZip ?? '').trim();
+    return street && zip ? 'ready' : 'no_address';
+  }
+
   const status = String(lead.ownerVerifyStatus ?? '').trim();
   if (!status) return 'roll_not_run';
   if (status === 'unsupported') return 'blocked';

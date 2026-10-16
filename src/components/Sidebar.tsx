@@ -123,12 +123,26 @@ export default function Sidebar({ collapsed, onToggle, mobileOpen = false, onMob
       // whoever has a terminal.
       { label: 'Verification', icon: <MarkEmailReadIcon />,   path: '/admin/verification' },
       /**
-       * Next to Verification because they are the two halves of "can we mail this address":
-       * one asks whether the mailbox is alive, the other whether it belongs to the insured.
-       * Ruben works this one, so it is a top-level entry rather than a tab he has to know
-       * about — a queue nobody can find is a queue nobody clears.
+       * ── Email check is hidden, not retired (Abdullah, 16 Oct 2026) ──────────
+       *
+       * It asks whether an address belongs to the insured using a string test — does a name
+       * from the policy appear in the address. Trestle answers that question properly, by
+       * looking the address up against the person, and now runs with the tax roll at
+       * pipeline time. Where both have an opinion the paid lookup wins, so the screen stops
+       * being somewhere a person has to go.
+       *
+       * Hidden rather than deleted, because the GATE BEHIND IT IS STILL ON: heldAddresses()
+       * refuses every undecided row, and at the time of hiding that was 918 addresses across
+       * C1–C8 plus Grade B, while Trestle's email check had only ever run on C2. Taking the
+       * link away does not release them and does not check them — it only removes the place
+       * a person could clear one. Whoever turns this back on is looking for that queue.
+       *
+       * Everything still works: /admin/name-review opens, the API answers, the card's own
+       * panel still shows a lead's held addresses, and the build still runs. Only the
+       * sidebar link is gone. Delete this line's comment and restore the entry below to
+       * bring it back.
        */
-      { label: 'Name check',  icon: <PersonSearchIcon />,     path: '/admin/name-review' },
+      // { label: 'Email check', icon: <ContactMailIcon />,      path: '/admin/name-review' },
 
       /**
        * ── The two groups that expand, kept last (Abdullah, 9 Oct 2026) ─────────

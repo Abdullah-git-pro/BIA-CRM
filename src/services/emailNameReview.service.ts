@@ -124,6 +124,8 @@ export type BuildResult = {
   undeliverable: number;
   /** Undecided rows dropped because the address no longer fails the check. */
   released: number;
+  /** Addresses the identity check confirms belong to this person, so never queued. */
+  confirmedTheirs: number;
   byCohort: Array<{ cohort: string; n: number }>;
 };
 
@@ -134,6 +136,40 @@ export type BuildResult = {
  * ON CONFLICT DO NOTHING. Re-running after a fresh trace picks up new addresses and leaves
  * settled ones alone.
  */
+/**
+ * What the identity check already decided about an address, keyed leadId|role|email.
+ *
+ * ── Why this queue has to know ──────────────────────────────────────────────
+ * The matcher here is a string test: does the address contain a name from the policy.
+ * Trestle answers the question the string test is a proxy FOR — whose mailbox is this —
+ * by looking the address up against the person. When both have an opinion the paid lookup
+ * is the better evidence, and asking a human to re-decide what we already know is how a
+ * queue of 745 teaches the person working it to stop reading the rows.
+ *
+ * jerseyd2000@aol.com is Diane Clonts, confirmed, age score 100. The matcher calls it a
+ * mismatch because her name is not in it. 24 open rows look like that one.
+ *
+ * ── Only the same person's verdict counts ───────────────────────────────────
+ * Keyed by role as well as address. An address confirmed as the CO-INSURED's is not
+ * evidence about the insured — that is the barb9280@aol.com case, where one household's
+ * address was registered to a different member — and the send would mail it as the
+ * insured. Three rows are in exactly that state and stay in the queue for a person.
+ *
+ * ── A null is not an answer ─────────────────────────────────────────────────
+ * Trestle returning no opinion leaves the row where it was. An outage is not a verdict.
+ */
+async function identityVerdicts(): Promise<Map<string, boolean>> {
+  const rows = await sql`
+    SELECT "leadId", "personRole", LOWER("value") AS "email", "nameMatch"
+      FROM "ContactVerification"
+     WHERE "channel" = 'email' AND "nameMatch" IS NOT NULL` as Array<Record<string, any>>;
+  const m = new Map<string, boolean>();
+  for (const r of rows) {
+    m.set(`${String(r.leadId)}|${String(r.personRole)}|${String(r.email)}`, r.nameMatch === true);
+  }
+  return m;
+}
+
 export async function buildReviewQueue(params: {
   effFrom: string; effTo: string;
   /**
@@ -181,9 +217,12 @@ export async function buildReviewQueue(params: {
    */
   const undeliverable = await blockedAddresses();
 
+  /** Verdicts from the paid identity check, which outrank the string matcher. */
+  const identity = await identityVerdicts();
+
   const out: BuildResult = {
     checked: 0, matched: 0, queued: 0, alreadyQueued: 0, notTraced: 0, undeliverable: 0,
-    released: 0, byCohort: [],
+    released: 0, confirmedTheirs: 0, byCohort: [],
   };
   /**
    * Every address that still fails, as "leadId|role|email".
@@ -236,6 +275,19 @@ export async function buildReviewQueue(params: {
         if (undeliverable.has(email)) {
           out.undeliverable++;
           uncheckedUndeliverable.add(key);
+          continue;
+        }
+
+        /**
+         * Already settled by the identity check, in this person's favour.
+         *
+         * Deliberately before the matcher runs: there is no question left to ask. Not added
+         * to stillFailing either, so an older held row for it is released by the cleanup
+         * below and the address becomes sendable — which is the point. A confirmation we
+         * paid for that leaves the address blocked anyway has bought nothing.
+         */
+        if (identity.get(`${String(l.id)}|${role}|${email}`) === true) {
+          out.confirmedTheirs++;
           continue;
         }
 
@@ -340,6 +392,23 @@ export async function getReviewList(params: {
        AND (${params.cohortFrom ?? null}::text IS NULL OR r."cohort" >= ${params.cohortFrom ?? null})
        AND (${params.cohortTo ?? null}::text   IS NULL OR r."cohort" <= ${params.cohortTo ?? null})
        AND (${params.openOnly ?? false}::boolean = FALSE OR r."decision" IS NULL)
+       /*
+        * Already settled the other way, and still held.
+        *
+        * Trestle says this address is registered to somebody else. That is the answer this
+        * queue exists to get, from better evidence than a string test, and the row stays
+        * undecided so heldAddresses() keeps the address out of every send. What it must not
+        * do is take up a reviewer's time: there is nothing for a person to add, and a queue
+        * padded with settled rows is how the one genuine stranger in it gets waved through.
+        *
+        * Scoped to the open view. The decided view still shows everything.
+        */
+       AND (${params.openOnly ?? false}::boolean = FALSE OR NOT EXISTS (
+             SELECT 1 FROM "ContactVerification" v
+              WHERE v."leadId" = r."leadId" AND v."channel" = 'email'
+                AND LOWER(v."value") = LOWER(r."email")
+                AND v."personRole" = r."personRole"
+                AND v."nameMatch" IS FALSE))
        AND (${params.decidedOnly ?? false}::boolean = FALSE OR r."decision" IS NOT NULL)
        AND (${params.grade ?? null}::text IS NULL
             OR COALESCE(l."manualGrade", l."grade") = ${params.grade ?? null})
@@ -423,17 +492,41 @@ export async function decideReview(ids: string[], input: {
  * than on the review row, which is why this has to join rather than filter in place.
  */
 export async function reviewSummary(params: { grade?: string } = {}): Promise<{
-  open: number; approved: number; rejected: number; byCohort: Array<{ cohort: string; open: number }>;
+  open: number; approved: number; rejected: number;
+  /**
+   * Open rows the identity check has already answered against the household.
+   *
+   * Counted rather than hidden: the addresses are still held out of every send, and a
+   * number that quietly vanishes from a queue is the kind of thing nobody can audit later.
+   */
+  settledByIdentity: number;
+  byCohort: Array<{ cohort: string; open: number }>;
 }> {
   const grade = params.grade?.trim() || null;
+  /*
+   * The headline must count exactly the rows the list returns.
+   *
+   * Two numbers for one thing on one screen is the fault this project keeps paying for —
+   * the week picker said 43 while the headline said 39 — so the identity exclusion is
+   * written into the count in the same words as into the list.
+   */
   const [t] = await sql`
-    SELECT COUNT(*) FILTER (WHERE r."decision" IS NULL)::int AS open,
+    SELECT COUNT(*) FILTER (WHERE r."decision" IS NULL AND NOT "notTheirs")::int AS open,
+           COUNT(*) FILTER (WHERE r."decision" IS NULL AND "notTheirs")::int AS "settledByIdentity",
            COUNT(*) FILTER (WHERE r."decision" = 'approved')::int AS approved,
            COUNT(*) FILTER (WHERE r."decision" = 'rejected')::int AS rejected
-      FROM "EmailNameReview" r
-      JOIN "Lead" l ON l."id" = r."leadId"
-     WHERE (${grade}::text IS NULL
-            OR COALESCE(l."manualGrade", l."grade") = ${grade})` as Array<Record<string, any>>;
+      FROM (
+        SELECT r."decision", EXISTS (
+                 SELECT 1 FROM "ContactVerification" v
+                  WHERE v."leadId" = r."leadId" AND v."channel" = 'email'
+                    AND LOWER(v."value") = LOWER(r."email")
+                    AND v."personRole" = r."personRole"
+                    AND v."nameMatch" IS FALSE) AS "notTheirs"
+          FROM "EmailNameReview" r
+          JOIN "Lead" l ON l."id" = r."leadId"
+         WHERE (${grade}::text IS NULL
+                OR COALESCE(l."manualGrade", l."grade") = ${grade})
+      ) r` as Array<Record<string, any>>;
   const byCohort = await sql`
     SELECT r."cohort", COUNT(*)::int AS open
       FROM "EmailNameReview" r
@@ -441,11 +534,18 @@ export async function reviewSummary(params: { grade?: string } = {}): Promise<{
      WHERE r."decision" IS NULL AND r."cohort" IS NOT NULL
        AND (${grade}::text IS NULL
             OR COALESCE(l."manualGrade", l."grade") = ${grade})
+       AND NOT EXISTS (
+             SELECT 1 FROM "ContactVerification" v
+              WHERE v."leadId" = r."leadId" AND v."channel" = 'email'
+                AND LOWER(v."value") = LOWER(r."email")
+                AND v."personRole" = r."personRole"
+                AND v."nameMatch" IS FALSE)
      GROUP BY 1 ORDER BY 1` as Array<Record<string, any>>;
   return {
     open: Number(t?.open ?? 0),
     approved: Number(t?.approved ?? 0),
     rejected: Number(t?.rejected ?? 0),
+    settledByIdentity: Number(t?.settledByIdentity ?? 0),
     byCohort: byCohort.map((r) => ({ cohort: String(r.cohort), open: Number(r.open) })),
   };
 }
