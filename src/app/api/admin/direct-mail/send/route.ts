@@ -131,6 +131,22 @@ export async function POST(req: NextRequest) {
         estimatedCost: Number((pending.length * unit).toFixed(2)),
         liveAvailable: liveEnabled(),
         approved: !!tpl.approvedAt,
+        /**
+         * How it will be PRINTED, not just how many will be.
+         *
+         * The quote answered "how many letters and what will they cost" and said nothing
+         * about colour or sides — the two settings that decide what the page actually looks
+         * like and what the vendor charges for it. A template whose colour had been flipped
+         * off would have quoted identically and posted grey, and the only screen that exists
+         * to be read before an irreversible run would have shown nothing wrong.
+         *
+         * unitCost is a stored figure and does not follow `color`, so the two are reported
+         * side by side deliberately: a colour run priced at a mono rate is visible here
+         * rather than on the invoice.
+         */
+        color: !!tpl.color,
+        doubleSided: tpl.doubleSided !== false,
+        size: String(tpl.size ?? 'us_letter'),
         check,
         blocked,
         missingFrom,

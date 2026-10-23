@@ -9,7 +9,9 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test:names": "node scripts/test-owner-name-match.mjs",
-    "test:review": "node --import ./scripts/lib/register-ts.mjs scripts/test-review-decision.mjs"
+    "test:review": "node --import ./scripts/lib/register-ts.mjs scripts/test-review-decision.mjs",
+    "test:letter": "node --import ./scripts/lib/register-ts.mjs scripts/test-letter-roundtrip.mjs",
+    "test:street": "node --import ./scripts/lib/register-ts.mjs scripts/test-street-normalise.mjs"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
@@ -21,6 +23,7 @@
     "@tiptap/core": "^3.32.0",
     "@tiptap/extension-image": "^3.32.0",
     "@tiptap/extension-link": "^3.32.0",
+    "@tiptap/extension-table": "^3.32.0",
     "@tiptap/extension-text-align": "^3.32.0",
     "@tiptap/pm": "^3.32.0",
     "@tiptap/react": "^3.32.0",
@@ -32,6 +35,7 @@
     "react-dom": "19.2.4"
   },
   "devDependencies": {
+    "@tiptap/html": "^3.32.0",
     "@types/bcryptjs": "^3.0.0",
     "@types/node": "^20",
     "@types/react": "^19",
@@ -39,6 +43,7 @@
     "cross-env": "^10.1.0",
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
+    "jsdom": "^26.1.0",
     "typescript": "^5"
   }
 }

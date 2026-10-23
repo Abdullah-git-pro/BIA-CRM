@@ -96,6 +96,14 @@ export default function DirectMailPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  /**
+   * A refused save, with what it would have cost. Held apart from `error` because it is not
+   * a failure — it is a question with two sensible answers.
+   */
+  const [structureLoss, setStructureLoss] = useState<{
+    loss: Array<{ field: string; label: string; before: number; after: number }>;
+    message: string;
+  } | null>(null);
 
   const seq = useRef(0);
   /** Set by the editor so the variable chips can insert where the cursor is. */
@@ -227,6 +235,7 @@ export default function DirectMailPage() {
     cohort: string; mode: 'test' | 'live'; batchId: string;
     pending: number; alreadySent: number; estimatedCost: number; unitCost: number;
     liveAvailable: boolean; approved: boolean; blocked: boolean; overCap: boolean; maxBatch: number;
+    color: boolean; doubleSided: boolean; size: string;
     missingFrom?: string[];
     failures?: Array<{ propertyId: string; toStreet: string; toCity: string; toZip: string; error: string }>;
   } | null>(null);
@@ -324,18 +333,33 @@ export default function DirectMailPage() {
     })();
   }, [editing.id, cohort]);
 
-  const save = async () => {
+  /**
+   * `force` re-sends the same letter with the structure guard waived.
+   *
+   * The guard refuses a save that would drop layout the stored letter had, because that is
+   * almost always the rich-text view quietly flattening tables and styles it cannot hold.
+   * Almost always is not always, so the refusal has to be passable — otherwise simplifying a
+   * letter on purpose becomes impossible and somebody edits the row by hand instead.
+   */
+  const save = async (force = false) => {
     setSaving(true);
     setError(null);
     setNote(null);
+    if (!force) setStructureLoss(null);
     try {
       const res = await fetch('/api/admin/direct-mail/templates', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editing),
+        body: JSON.stringify(force ? { ...editing, allowStructureLoss: true } : editing),
       });
       const json = await res.json();
+      if (!json.success && json.structureLoss) {
+        // Not an error to shout about — a question, with the numbers, and a way through.
+        setStructureLoss({ loss: json.structureLoss, message: String(json.error ?? '') });
+        return;
+      }
       if (!json.success) throw new Error(json.error || 'Could not save');
+      setStructureLoss(null);
       setEditing(json.template);
       setSaved(json.template);
       setNote(json.approvalCleared
@@ -400,6 +424,42 @@ export default function DirectMailPage() {
 
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
       {note && <Alert severity="success" sx={{ mb: 2 }} onClose={() => setNote(null)}>{note}</Alert>}
+
+      {/*
+        A refused save, shown with the numbers and both ways out.
+        Deliberately not an error: the letter on screen is still the letter, nothing has been
+        written, and the person is the only one who knows whether they meant to simplify it.
+      */}
+      {structureLoss && (
+        <Alert
+          severity="warning"
+          sx={{ mb: 2 }}
+          action={(
+            <Stack direction="row" spacing={1}>
+              <Button size="small" onClick={() => setStructureLoss(null)}>
+                Leave it
+              </Button>
+              <Button size="small" color="warning" variant="contained" onClick={() => save(true)}>
+                Save anyway
+              </Button>
+            </Stack>
+          )}
+        >
+          <strong>This save would drop part of the letter&rsquo;s layout.</strong>
+          <Box component="ul" sx={{ pl: 2.5, my: 0.75 }}>
+            {structureLoss.loss.map((l) => (
+              <li key={l.field} style={{ fontSize: 13 }}>
+                {l.before} {l.label} &rarr; <strong>{l.after}</strong>
+              </li>
+            ))}
+          </Box>
+          <Box sx={{ fontSize: 13 }}>
+            That usually means the letter was edited in the rich-text view, which cannot hold
+            its tables and styles. Switch to <strong>Source</strong> and make the change there.
+            Nothing has been saved.
+          </Box>
+        </Alert>
+      )}
 
       <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2.5} sx={{ alignItems: 'flex-start' }}>
 
@@ -519,8 +579,11 @@ export default function DirectMailPage() {
                 </span>
               </Tooltip>
             )}
+            {/* save() is wrapped, not passed directly: onClick hands a handler the MouseEvent,
+                and as `force` that is truthy — which would waive the structure guard on every
+                save without anybody asking for it. */}
             <Button variant="contained" startIcon={saving ? <CircularProgress size={14} color="inherit" /> : <SaveIcon />}
-              onClick={save} disabled={saving || !editing.name}>
+              onClick={() => save()} disabled={saving || !editing.name}>
               Save
             </Button>
           </Stack>
@@ -744,6 +807,24 @@ export default function DirectMailPage() {
                       {quote.unitCost.toFixed(2)} each</>
                   )}
                   {quote.mode === 'test' && <> · free, nothing is printed or posted</>}
+                </Box>
+
+                {/*
+                  How it will be printed, stated before anybody approves it.
+                  The count and the cost were here from the start; colour and sides were not,
+                  so a template whose colour had been flipped off read exactly like one that
+                  had not, and the mistake only became visible once the mail arrived grey.
+                */}
+                <Box sx={{ fontSize: 13.5, color: '#5a6675', mb: 1 }}>
+                  Printed{' '}
+                  <strong style={{ color: quote.color ? '#1F3B73' : '#8a3b00' }}>
+                    {quote.color ? 'in colour' : 'in black and white'}
+                  </strong>
+                  {', '}{quote.doubleSided ? 'double-sided' : 'one side only'}
+                  {quote.size === 'us_legal' ? ', US legal' : ', US letter'}.
+                  {!quote.color && (
+                    <> The red ring and the highlight will print grey.</>
+                  )}
                 </Box>
 
                 {!!quote.alreadySent && (

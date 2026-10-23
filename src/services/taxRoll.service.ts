@@ -60,8 +60,28 @@ export interface Municipality { wippId: string; town: string }
 export const WIPP_BY_ZIP: Record<string, Municipality[]> = {
   '07731': [{ wippId: '1321', town: 'Howell' }],
   '07746': [{ wippId: '1330', town: 'Marlboro' }],
+  /**
+   * ── 07726: the township's TAX roll comes before the utility authority ──────
+   *
+   * 'WMON' is not Manalapan Township. It is the Western Monmouth Utilities Authority
+   * (103 Pension Road, Manalapan) — a water and sewer roll, which the portal itself labels
+   * "Utility Quick Pay". It was configured as `town: 'Manalapan'` and every verdict from it
+   * has been stored as `manalapan_tax_roll`, which reads as something it is not.
+   *
+   * That matters for the reason the tax roll is tried first everywhere else: every property
+   * pays tax, but not every property has a municipal water account, and the account holder
+   * is not always the person on the deed. On a condominium the utility frequently sits with
+   * the management company — "TOWNHOUSE MANAGEMENT LLC" holds one at 124 Deepwater Circle —
+   * while the deed names the owner we are trying to confirm.
+   *
+   * Manalapan Township's own tax roll is 1328 (Abdullah, 22 Oct 2026, from the portal:
+   * wippId=1328 renders "MANALAPAN TOWNSHIP" over a property-tax search). WMON is kept
+   * after it as a fallback, because a property absent from the tax roll may still appear on
+   * the utility one — the same reason the utility endpoint exists for every other town.
+   */
   '07726': [
-    { wippId: 'WMON', town: 'Manalapan' },    // ~213 of our 241 leads in this ZIP
+    { wippId: '1328', town: 'Manalapan' },    // the township's property tax roll
+    { wippId: 'WMON', town: 'Western Monmouth Utilities' },
     { wippId: '1313', town: 'Englishtown' },  // the borough proper
   ],
   // 07728 covers Freehold Township AND Freehold Borough — separate municipalities,
@@ -291,6 +311,18 @@ function throttled<T>(fn: () => Promise<T>): Promise<T> {
  *
  * CRT, TERR, DRV and CIRC are observed on live rolls; the rest are the ordinary USPS
  * forms. Everything maps to the long word, so it does not matter which side is short.
+ *
+ * ── The second batch (22 Oct 2026) ──────────────────────────────────────────
+ * Abdullah checked "20 Oxford Ky, Colts Neck" by hand and the portal returned
+ * SALVA, FRANCIA at 20 OXFORD KEY while the card read "not on the tax roll". KY was simply
+ * missing here. Auditing every trailing word in all 11,127 addresses against this table
+ * turned up twelve more of the same kind, and they are not evenly spread: PLZ alone is 20
+ * cards and every one of them is Grade A, because Monroe's Society Hill plazas are a
+ * renewal-heavy condo development. The roll writes "148C MACLURA PLAZA"; we wrote
+ * "148c Maclura Plz"; nothing matched.
+ *
+ * An abbreviation missing from this table is worse than one spelled out on both sides,
+ * because it also suppresses the broad fallback in searchQueries — see the note there.
  */
 const STREET_SUFFIX: Record<string, string> = {
   ST: 'STREET', RD: 'ROAD', DR: 'DRIVE', CT: 'COURT', LN: 'LANE', AVE: 'AVENUE', AV: 'AVENUE',
@@ -300,6 +332,12 @@ const STREET_SUFFIX: Record<string, string> = {
   CRT: 'COURT', CTS: 'COURT', TERR: 'TERRACE', DRV: 'DRIVE', CIRC: 'CIRCLE', CRCL: 'CIRCLE',
   LNE: 'LANE', AVEN: 'AVENUE', BLV: 'BOULEVARD', PKY: 'PARKWAY', PKWAY: 'PARKWAY',
   SQR: 'SQUARE', PLC: 'PLACE', RDG: 'RIDGE', HGTS: 'HEIGHTS', HTS: 'HEIGHTS',
+  // Found by audit, 22 Oct 2026 — each one observed in our own address data.
+  PLZ: 'PLAZA', TPKE: 'TURNPIKE', TPK: 'TURNPIKE', KY: 'KEY', HL: 'HILL', HLS: 'HILLS',
+  CV: 'COVE', GDNS: 'GARDENS', GDN: 'GARDEN', KNL: 'KNOLL', MNR: 'MANOR', GRN: 'GREEN',
+  HOLW: 'HOLLOW', XING: 'CROSSING', CRES: 'CRESCENT', COR: 'CORNER', PRT: 'PORT',
+  EXT: 'EXTENSION', CTR: 'CENTER', GLN: 'GLEN', MDW: 'MEADOW', MDWS: 'MEADOWS',
+  VLG: 'VILLAGE', VW: 'VIEW', FRST: 'FOREST', PT: 'POINT', PNE: 'PINE', BRG: 'BRIDGE',
 };
 
 /**
@@ -358,6 +396,8 @@ export function normalizeStreet(s: unknown): string {
    */
   base = base.replace(/\b([ODL]) ([A-Z]{3,})\b/g, '$1$2');
 
+  base = dropPhantomDesignator(base);
+
   // "51B PIAZZA TASSO" → "51 PIAZZA TASSO UNIT B". Only when a single letter is glued to
   // the leading house number, which is the shape the source actually produces.
   const glued = base.match(/^(\d+)([A-Z])\s+(.*)$/);
@@ -372,19 +412,86 @@ export function normalizeStreet(s: unknown): string {
    */
   base = base.replace(/\b(UNIT|APT|APARTMENT|STE|SUITE|BLDG|BUILDING)\s+([A-Z0-9]+)-([A-Z0-9]+)\b/g, '$1 $2$3');
 
-  return base
-    .split(' ')
-    .map((tok) => STREET_SUFFIX[tok] ?? tok)
-    // APT, UNIT, STE and friends all name the same thing. One word, so the comparison is
-    // about which unit it is rather than which word the clerk typed.
-    .map((tok) => (UNIT_WORD.has(tok) ? 'UNIT' : tok))
+  /**
+   * ── Why the suffix table is applied to ONE token, not every token ─────────
+   *
+   * It used to run over the whole address, which reads "St" as Street wherever it appears.
+   * "157 Rue De St Germaine" became "157 RUE DE STREET GERMAINE" — that St is Saint — and
+   * "Ste" was flattened to a unit marker, so "104 Stevens St Ste Vens" became
+   * "104 STEVENS STREET UNIT VENS", inventing a flat called Vens. 25 cards read like that.
+   *
+   * A street type is the last word of the street name, so that is the only place it is
+   * expanded. Two exceptions, both of which still want the word before the last one:
+   *   - a trailing directional, "50 Pearl St E"
+   *   - a street whose NAME is a letter, "6512 Ave C" — nine of these in Monroe
+   * Everything after a unit marker is set aside first, so "73 Overlook Way Apt D" still
+   * expands Way.
+   */
+  const toks = base.split(' ');
+
+  /**
+   * APT, UNIT, STE and friends all name the same thing — but only when a unit actually
+   * follows. A unit designator carries a digit ("508", "2105", "11N", "2E") or is one or
+   * two characters ("A", "D"). A four-letter word after "Ste" is part of the street name,
+   * not a flat number, and flattening it was how "Ste Vens" turned into "UNIT VENS".
+   */
+  const isUnitDesignator = (tok: string | undefined) =>
+    !!tok && (/\d/.test(tok) || tok.length <= 2);
+  const flat = toks.map((tok, i) =>
+    (UNIT_WORD.has(tok) && isUnitDesignator(toks[i + 1]) ? 'UNIT' : tok));
+
+  const unitAt = flat.indexOf('UNIT');
+  const streetPart = unitAt === -1 ? flat : flat.slice(0, unitAt);
+  const unitPart = unitAt === -1 ? [] : flat.slice(unitAt);
+
+  const last = streetPart.length - 1;
+  if (last >= 0) {
+    const tail = streetPart[last];
+    // The street type sits one word earlier when a directional or a letter-name follows it.
+    const shifted = (DIRECTIONAL.has(tail) || /^[A-Z]$/.test(tail)) && last >= 1 ? last - 1 : last;
+    streetPart[shifted] = STREET_SUFFIX[streetPart[shifted]] ?? streetPart[shifted];
+  }
+
+  return [...streetPart, ...unitPart]
     .join(' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
+/**
+ * Drop the phantom unit designator Real Estate API appends to some street names.
+ *
+ * 64 of our addresses arrive from the vendor like this:
+ *   "7 Florence Dr Fl Orence"        "104 Stevens St Ste Vens"
+ *   "77 Sterling Dr Ste Rling"       "8 Stephenville Pkwy Ste Phenville"
+ * The tail is the street name split in two: "Florence" = "Fl" + "orence", "Sterling" =
+ * "Ste" + "rling". Something upstream read the first letters of the street name as a
+ * secondary unit designator — FL is Floor, STE is Suite in the USPS tables — and appended
+ * the designator plus the remainder of the word. It is not our doing: storage.service
+ * copies `property.address.street` verbatim, and `addressFull` carries the same tail.
+ *
+ * Repaired here rather than in the Lead table on purpose. The next import would write the
+ * vendor's spelling back over any cleanup, and the vendor is not going to fix this for us.
+ * `mailStreet` holds the correct street on 63 of the 64 — worth knowing, but not a
+ * substitute, since it is the MAILING address and need not be the property at all.
+ *
+ * The test is self-verifying: the tail is only removed when the designator and what follows
+ * it rebuild a word that is already in the address. "Ste Vens" goes because the street is
+ * already "Stevens"; a genuine "Ste 200" or "Unit B" has nothing to rebuild and stays.
+ */
+function dropPhantomDesignator(s: string): string {
+  const m = s.match(/^(.*?)\s+(FL|STE|APT|RM|BLDG|DEPT|UNIT)\s+([A-Z]{2,})$/);
+  if (!m) return s;
+  const [, head, designator, rest] = m;
+  const rebuilt = `${designator}${rest}`;
+  return head.split(' ').includes(rebuilt) ? head : s;
+}
+
 /** Every word a municipality might use for the same sub-address. */
 const UNIT_WORD = new Set(['APT', 'APARTMENT', 'UNIT', 'STE', 'SUITE', 'BLDG', 'BUILDING']);
+
+/** Abbreviated compass points, which trail the street type rather than replace it. */
+const DIRECTIONAL = new Set(['N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW']);
 
 /**
  * The queries to ask the roll for, broadest last.
@@ -398,16 +505,31 @@ const UNIT_WORD = new Set(['APT', 'APARTMENT', 'UNIT', 'STE', 'SUITE', 'BLDG', '
  * The last form drops the suffix and the unit entirely. That is Frank's fallback and it is
  * deliberately last: "73 OVERLOOK" finds the building when "73 OVERLOOK WAY" finds nothing,
  * but it also returns every unit in it, so it is only safe behind the match test below.
+ *
+ * ── Why the broad form is now built by word, not by regex ───────────────────
+ * It used to strip a trailing suffix by matching the canonical words against the end of the
+ * string, which quietly did nothing for the two cases that needed it most. An abbreviation
+ * missing from STREET_SUFFIX left the short form in place ("20 OXFORD KY"), so the strip
+ * found no canonical word to remove and the fallback came out identical to the exact query —
+ * the roll was asked the same failing question twice and the one that works, "20 OXFORD",
+ * was never sent. A trailing directional did the same thing ("138 COACHMAN DRIVE N"), since
+ * the suffix was no longer last.
+ *
+ * Popping words handles both: the directional comes off, then the street type. Never below
+ * two words, so a bare house number is never sent — that would return the whole street.
  */
 export function searchQueries(street: string): string[] {
   const norm = normalizeStreet(street);
   const raw = String(street ?? '').trim();
-  const numberAndName = norm
-    .replace(/\s+UNIT\s+\S+\s*$/, '')
-    .replace(new RegExp(`\\s+(${Object.values(STREET_SUFFIX).join('|')})\\s*$`), '')
-    .trim();
+  const words = norm.replace(/\s+UNIT\s+\S+\s*$/, '').trim().split(' ');
+  if (words.length > 2 && DIRECTIONAL.has(words[words.length - 1])) words.pop();
+  if (words.length > 2 && SUFFIX_WORDS.has(words[words.length - 1])) words.pop();
+  const numberAndName = words.join(' ').trim();
   return [...new Set([norm, raw, numberAndName].filter(Boolean))];
 }
+
+/** The canonical long forms, for recognising a street type wherever it has been expanded. */
+const SUFFIX_WORDS = new Set(Object.values(STREET_SUFFIX));
 
 // ── Lookup ──────────────────────────────────────────────────────────────────
 
@@ -538,7 +660,32 @@ function sameBuilding(a: string, b: string): boolean {
   const key = (s: string) => normalizeStreet(s).replace(/\s+UNIT\s+\S+\s*$/, '').trim();
   const ka = key(a);
   const kb = key(b);
-  return !!ka && ka === kb;
+  if (!ka || !kb) return false;
+  if (ka === kb) return true;
+
+  /**
+   * One side carries a street type the other never had.
+   *
+   * Our source holds four Monroe addresses as bare "1136 Vanderbergh" with no type at all,
+   * and the broad query deliberately drops the type — so the roll answers "1136 VANDERBERGH
+   * AVENUE" to a question asked as "1136 VANDERBERGH" and strict equality threw it away.
+   * That made the fallback unable to use its own result.
+   *
+   * Deliberately narrow: the house number must be identical, the shorter address must be a
+   * whole-word prefix of the longer, and the longer may run to exactly one extra word. A
+   * substring test would read "20 OXFORD" into "20 OXFORDSHIRE", and allowing two extra
+   * words would reach across genuinely different streets.
+   *
+   * This only decides whether a row is worth HOLDING for the ambiguity test. Two different
+   * streets that both extend our address still come back as two parcels, which is Frank's
+   * case 9 — reported to him rather than resolved by picking one.
+   */
+  const wa = ka.split(' ');
+  const wb = kb.split(' ');
+  if (wa[0] !== wb[0]) return false;
+  const [short, long] = wa.length <= wb.length ? [wa, wb] : [wb, wa];
+  if (short.length < 2 || long.length - short.length > 1) return false;
+  return short.every((w, i) => long[i] === w);
 }
 
 /**

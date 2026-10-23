@@ -304,6 +304,85 @@ export async function readiness(grade = 'A', cohort?: string): Promise<MailReadi
   return [...by.values()].sort((a, b) => b.cohort.localeCompare(a.cohort));
 }
 
+/**
+ * The structural shape of a letter: how much layout it is carrying.
+ *
+ * ── Why this is counted at all ──────────────────────────────────────────────
+ * The letter is built out of tables with inline styles on the cells, and the editor that
+ * people write it in cannot hold all of that. TipTap serialises from its own document
+ * model, so whatever its schema does not understand is gone the moment somebody types in
+ * the rich-text view — and the result still passes every other gate, because the merge
+ * variables survive. Measured on the live template before the table extensions were added:
+ * 6 tables and 15 cells went to zero, and all 54 inline styles with them.
+ *
+ * Nothing refuses such a save. The letter simply prints as a column of loose lines, and the
+ * first person to notice is the homeowner.
+ *
+ * ── Why these five and not a checksum ───────────────────────────────────────
+ * A checksum would refuse every edit, including the wording changes this editor exists for.
+ * These are the things a letter loses by ACCIDENT rather than by intent: structure that was
+ * there and silently is not. Deliberately generic — no colour, no pixel value, nothing
+ * specific to one campaign's artwork — so the rule still means something for the next
+ * template somebody writes.
+ */
+export type LetterStructure = {
+  tables: number;
+  cells: number;
+  images: number;
+  inlineStyles: number;
+  links: number;
+};
+
+const occurrences = (haystack: string, needle: string): number =>
+  haystack.split(needle).length - 1;
+
+export function structureOf(html: string): LetterStructure {
+  const s = String(html ?? '');
+  return {
+    tables: occurrences(s, '<table'),
+    cells: occurrences(s, '<td'),
+    images: occurrences(s, '<img'),
+    inlineStyles: occurrences(s, 'style="'),
+    links: occurrences(s, '<a '),
+  };
+}
+
+/** Human-readable names, because the refusal is read by whoever writes the copy. */
+const STRUCTURE_LABEL: Record<keyof LetterStructure, string> = {
+  tables: 'layout tables',
+  cells: 'table cells',
+  images: 'images',
+  inlineStyles: 'inline styles',
+  links: 'links',
+};
+
+export type StructureLoss = {
+  field: keyof LetterStructure;
+  label: string;
+  before: number;
+  after: number;
+};
+
+/**
+ * What the incoming letter has LOST relative to the stored one.
+ *
+ * Only losses. A save that adds a table, or leaves a count alone, is somebody doing their
+ * job — and the point of the guard is to catch the edit nobody meant to make, not to freeze
+ * the letter.
+ */
+export function structureLoss(before: string, after: string): StructureLoss[] {
+  const a = structureOf(before);
+  const b = structureOf(after);
+  return (Object.keys(a) as Array<keyof LetterStructure>)
+    .filter((k) => b[k] < a[k])
+    .map((k) => ({ field: k, label: STRUCTURE_LABEL[k], before: a[k], after: b[k] }));
+}
+
+/** "6 layout tables became 0, and 54 inline styles became 32" — for the refusal message. */
+export function describeStructureLoss(loss: StructureLoss[]): string {
+  return loss.map((l) => `${l.before} ${l.label} became ${l.after}`).join(', ');
+}
+
 export type TemplateCheck = {
   used: string[];
   /** Referenced but not a variable this channel can ever supply. */

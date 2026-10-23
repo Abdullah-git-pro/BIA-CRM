@@ -6,6 +6,7 @@ import StarterKit from '@tiptap/starter-kit';
 import TextAlign from '@tiptap/extension-text-align';
 import Image from '@tiptap/extension-image';
 import Link from '@tiptap/extension-link';
+import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import {
   Box, Stack, Divider, Tooltip, ToggleButton, Button, Alert, TextField,
 } from '@mui/material';
@@ -110,6 +111,37 @@ function Btn({ on, onClick, title, disabled, children }: {
   );
 }
 
+/**
+ * Keep named HTML attributes verbatim through parse and render.
+ *
+ * TipTap's table nodes model STRUCTURE, not presentation: they carry colspan, rowspan and
+ * colwidth, and drop everything else. The direct-mail letter's whole geometry lives in
+ * `style`, `width`, `valign` and `align` on the cells, so without this the tables come back
+ * as tables and still lay out wrongly — which is worse than losing them outright, because it
+ * looks like it worked.
+ *
+ * Measured by scripts/test-letter-roundtrip.mjs against the live template.
+ */
+const keepAttrs = (names: readonly string[]) => ({
+  addAttributes(this: { parent?: () => Record<string, unknown> }) {
+    const base = this.parent?.() ?? {};
+    const extra: Record<string, unknown> = {};
+    for (const name of names) {
+      extra[name] = {
+        default: null,
+        parseHTML: (el: HTMLElement) => el.getAttribute(name),
+        renderHTML: (attrs: Record<string, string | null>) => (
+          attrs[name] ? { [name]: attrs[name] } : {}
+        ),
+      };
+    }
+    return { ...base, ...extra };
+  },
+});
+
+const CELL_ATTRS = ['style', 'width', 'valign', 'align'] as const;
+const TABLE_ATTRS = ['style', 'width', 'cellpadding', 'cellspacing', 'border'] as const;
+
 export default function LetterEditor({ value, onChange, onRegisterInsert }: {
   value: string;
   onChange: (html: string) => void;
@@ -131,6 +163,22 @@ export default function LetterEditor({ value, onChange, onRegisterInsert }: {
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
       Image.configure({ inline: false, allowBase64: true }),
       Link.configure({ openOnClick: false, autolink: false }),
+      /**
+       * Tables, because the letter is built out of them.
+       *
+       * Without these the schema cannot hold a table at all, so opening the direct-mail
+       * letter flattened its masthead, its product rail and its closing band into a column
+       * of loose lines — and the first keystroke in this view would have saved that back
+       * over the real one. Measured: 6 tables and 15 cells went to zero.
+       *
+       * `resizable` is off deliberately. A column width dragged on screen means nothing to
+       * a print vendor composing a page, and it would write a colwidth that fights the
+       * `width` attributes the letter actually uses.
+       */
+      Table.extend(keepAttrs(TABLE_ATTRS)).configure({ resizable: false }),
+      TableRow.extend(keepAttrs(['style'])),
+      TableCell.extend(keepAttrs(CELL_ATTRS)),
+      TableHeader.extend(keepAttrs(CELL_ATTRS)),
     ],
     content: value || '',
     // Next renders this on the server first; rendering immediately mismatches hydration.

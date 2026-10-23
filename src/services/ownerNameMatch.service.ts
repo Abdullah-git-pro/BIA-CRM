@@ -445,6 +445,27 @@ export function compareOwnerNames(
       .filter((p): p is RollPerson => !!p)
       .map((p) => `${p.last}, ${p.first}`),
     ...splitParties(theirsDisplay),
+    /**
+     * Rolls that write "LAST FIRST" with no comma at all.
+     *
+     * splitPerson reads a comma-less name as "First Last", because that is how our own
+     * records are written. Several municipalities do the opposite and omit the comma
+     * entirely — North Brunswick writes "SAVARIN JEREMY", "CAGAOAN SHAUN", "BHATT AVNI A" —
+     * so the surname was read as the given name and every one of them came back as a
+     * different person. Measured on C1-C8 Grade A: 19 of North Brunswick's 20 mismatches
+     * were comma-less, and 22 of the 47 mismatches overall named the person on the card.
+     *
+     * There is no way to tell the two conventions apart from one string, so both readings
+     * are offered. That is safe here precisely because this function compares against a
+     * known person rather than choosing between candidates: a reading only wins if BOTH the
+     * surname and the given name agree with the card, which a genuinely different owner's
+     * name does not do under either order.
+     */
+    ...splitParties(theirsDisplay)
+      .filter((party) => !party.includes(','))
+      .map((party) => coreTokens(party))
+      .filter((toks) => toks.length >= 2)
+      .map((toks) => `${toks[0]}, ${toks.slice(1).join(' ')}`),
   ];
 
   let best: NameComparison = { result: 'mismatch', detail: 'Name does not match the tax record', ours: oursDisplay, theirs: theirsDisplay };
@@ -482,5 +503,37 @@ export function compareOwnerNames(
       };
     }
   }
+
+  /**
+   * The card itself has the given and family names the wrong way round.
+   *
+   * "111 Hidden Pond Ct" is held as first "Narayan", last "Sreejith"; the roll says
+   * "NARAYAN, SREEJITH" — correctly punctuated, so the roll is right and our record is
+   * reversed. The property data supplies this on a minority of names, most often where the
+   * family name is unfamiliar to whoever keyed it.
+   *
+   * Reported as 'partial' and never as a match, deliberately. The two names do describe the
+   * same household, so it must not sit in the queue as a stranger; but the CARD is wrong and
+   * somebody has to turn it round, which a silent match would hide. Only tried once nothing
+   * else matched, so it can never downgrade a real result.
+   */
+  if (best.result === 'mismatch' && ourSide.first && ourSide.last) {
+    const swapped = { first: ourSide.last, last: ourSide.first };
+    for (const party of parties) {
+      const p = splitPerson(party);
+      if (!p) continue;
+      if (surnamesAgree(swapped.last, p.last) && firstNamesAgree(swapped.first, p.first)) {
+        return {
+          result: 'partial',
+          detail: `Same name, reversed on our card — we hold "${ourFirstRaw} ${ourLastRaw}", `
+            + `the record shows "${p.last}, ${p.first}". The record is the right way round; `
+            + 'the card needs the given and family names swapped.',
+          ours: oursDisplay,
+          theirs: theirsDisplay,
+        };
+      }
+    }
+  }
+
   return best;
 }
